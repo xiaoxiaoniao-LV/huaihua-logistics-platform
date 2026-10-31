@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>怀化国际陆港 · 数字孪生一张图（概念演示）</title>
+
+<!-- ECharts 图表库（全局 UMD 构建） -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+<!-- Three.js 使用 importmap 以 ES Module 方式加载 -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<style>
+  :root {
+    --cyan: #38bdf8;
+    --cyan-dim: rgba(56, 189, 248, 0.18);
+    --bg-panel: rgba(8, 18, 32, 0.78);
+    --border: rgba(56, 189, 248, 0.28);
+    --text: #cfe8ff;
+    --text-dim: #7d9bbd;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #050a14;
+    color: var(--text);
+  }
+
+  #scene-container { position: fixed; inset: 0; z-index: 0; }
+
+  /* ============ 顶部栏 ============ */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 64px; z-index: 10;
+    display: flex; align-items: center; padding: 0 20px;
+    background: linear-gradient(180deg, rgba(5,12,24,0.95), rgba(5,12,24,0.55));
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(6px);
+  }
+  .topbar .title {
+    font-size: 22px; font-weight: 700; letter-spacing: 2px;
+    background: linear-gradient(90deg, #7dd3fc, #38bdf8);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .topbar .subtitle { font-size: 12px; color: var(--text-dim); margin-left: 12px; letter-spacing: 1px; }
+  .topbar .kpis { margin-left: auto; display: flex; gap: 24px; align-items: center; }
+  .kpi { text-align: center; }
+  .kpi .val { font-size: 22px; font-weight: 700; color: #e0f2fe; font-family: "Consolas", monospace; }
+  .kpi .lbl { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .topbar .clock { margin-left: 28px; font-family: "Consolas", monospace; font-size: 14px; color: #7dd3fc; white-space: nowrap; }
+
+  /* ============ 左侧：资源列表 ============ */
+  .panel { position: fixed; z-index: 10; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 10px; backdrop-filter: blur(6px); box-shadow: 0 0 24px rgba(56,189,248,0.08); }
+  .panel h3 { font-size: 14px; font-weight: 700; padding: 12px 14px; border-bottom: 1px solid var(--border);
+    color: #7dd3fc; letter-spacing: 1px; }
+  .panel h3::before { content: "▍"; color: var(--cyan); margin-right: 6px; }
+
+  .left { top: 80px; left: 16px; width: 264px; bottom: 240px; display: flex; flex-direction: column; }
+  .res-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .res-item {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 6px;
+    border-radius: 6px; cursor: pointer; background: rgba(255,255,255,0.02);
+    border: 1px solid transparent; transition: all .15s;
+  }
+  .res-item:hover { background: rgba(56,189,248,0.10); border-color: var(--border); }
+  .res-item .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
+  .res-item .name { font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res-item .st { font-size: 11px; }
+
+  /* ============ 右侧：告警 ============ */
+  .right { top: 80px; right: 16px; width: 264px; bottom: 240px; display: flex; flex-direction: column; }
+  .alerts { flex: 1; overflow-y: auto; padding: 10px; }
+  .alert {
+    padding: 8px 10px; margin-bottom: 8px; border-radius: 6px; font-size: 12px;
+    border-left: 3px solid; background: rgba(255,255,255,0.02); line-height: 1.5;
+  }
+  .alert.warn { border-color: #f59e0b; color: #fcd34d; }
+  .alert.critical { border-color: #ef4444; color: #fca5a5; }
+  .alert.info { border-color: #38bdf8; color: #7dd3fc; }
+  .alert .t { font-size: 10px; color: var(--text-dim); display: block; margin-top: 2px; }
+
+  /* ============ 底部：图表 ============ */
+  .bottom { left: 16px; right: 16px; bottom: 16px; height: 216px; display: flex; gap: 14px;
+    padding: 12px; }
+  .chart { flex: 1; height: 100%; min-width: 0; }
+
+  /* ============ 图例 ============ */
+  .legend { position: fixed; left: 292px; top: 80px; z-index: 10; display: flex; flex-direction: column;
+    gap: 6px; padding: 10px 12px; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 8px; backdrop-filter: blur(6px); }
+  .legend .li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+  .legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  /* ============ 资源详情卡片 ============ */
+  #infoCard {
+    position: fixed; left: 292px; bottom: 250px; z-index: 11; width: 260px;
+    background: rgba(8,18,32,0.92); border: 1px solid var(--cyan); border-radius: 10px;
+    padding: 14px; display: none; backdrop-filter: blur(8px);
+    box-shadow: 0 0 30px rgba(56,189,248,0.25);
+  }
+  #infoCard .head { font-size: 15px; font-weight: 700; color: #e0f2fe; margin-bottom: 4px; }
+  #infoCard .tag { font-size: 11px; color: var(--text-dim); margin-bottom: 10px; }
+  #infoCard .row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0;
+    border-bottom: 1px dashed rgba(56,189,248,0.15); }
+  #infoCard .row .k { color: var(--text-dim); }
+  #infoCard .row .v { color: #e0f2fe; font-family: "Consolas", monospace; }
+  #infoCard .close { position: absolute; top: 8px; right: 12px; cursor: pointer; color: var(--text-dim); font-size: 16px; }
+</style>
+</head>
+<body>
+
+<div id="scene-container"></div>
+
+<!-- 顶部栏 -->
+<div class="topbar">
+  <div>
+    <div class="title">怀化国际陆港 · 数字孪生一张图</div>
+    <div class="subtitle">物流资源共享与智能撮合平台 · 概念演示</div>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="val" id="kpi-throughput">3.2 万吨</div><div class="lbl">今日吞吐量</div></div>
+    <div class="kpi"><div class="val" id="kpi-res">15 个</div><div class="lbl">在网资源</div></div>
+    <div class="kpi"><div class="val" id="kpi-train">12 列</div><div class="lbl">今日班列</div></div>
+    <div class="kpi"><div class="val" id="kpi-temp">-18.5 ℃</div><div class="lbl">冷链均温</div></div>
+  </div>
+  <div class="clock" id="clock">--</div>
+</div>
+
+<!-- 图例 -->
+<div class="legend">
+  <div class="li"><span class="dot" style="background:#2dd4bf"></span>可用 / 可预约</div>
+  <div class="li"><span class="dot" style="background:#f59e0b"></span>已预约</div>
+  <div class="li"><span class="dot" style="background:#64748b"></span>待审核</div>
+  <div class="li"><span class="dot" style="background:#334155"></span>已下线</div>
+  <div class="li" style="margin-top:4px;color:#5b7ea8;font-size:11px">拖动旋转 · 滚轮缩放 · 点击资源查看详情</div>
+</div>
+
+<!-- 左侧资源列表 -->
+<div class="panel left">
+  <h3>港区资源</h3>
+  <div class="res-list" id="resList"></div>
+</div>
+
+<!-- 右侧告警 -->
+<div class="panel right">
+  <h3>实时告警</h3>
+  <div class="alerts" id="alerts"></div>
+</div>
+
+<!-- 资源详情卡片 -->
+<div id="infoCard">
+  <span class="close" id="infoClose">✕</span>
+  <div class="head" id="icName">--</div>
+  <div class="tag" id="icTag">--</div>
+  <div class="row"><span class="k">当前状态</span><span class="v" id="icStatus">--</span></div>
+  <div class="row"><span class="k">温度</span><span class="v" id="icTemp">--</span></div>
+  <div class="row"><span class="k">价格</span><span class="v" id="icPrice">--</span></div>
+  <div class="row"><span class="k">位置</span><span class="v" id="icLoc">--</span></div>
+</div>
+
+<!-- 底部图表 -->
+<div class="panel bottom">
+  <div class="chart" id="chart1"></div>
+  <div class="chart" id="chart2"></div>
+  <div class="chart" id="chart3"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const E = window.echarts;
+
+/* ================= 资源模拟数据 ================= */
+const STATUS = {
+  available: { color: 0x2dd4bf, label: '可用', desc: '可预约' },
+  booked:    { color: 0xf59e0b, label: '已预约' },
+  pending:   { color: 0x64748b, label: '待审核' },
+  offline:   { color: 0x334155, label: '已下线' },
+};
+const TYPE_LABEL = { cold_box: '冷链箱位', warehouse: '仓储位', vehicle: '运力', equipment: '设备' };
+
+const resources = [
+  { id:'CW-01', name:'冷链箱位 CW-01', type:'cold_box', temp:-18, status:'available', price:120, unit:'元/天', pos:[-30, 1.6, -2] },
+  { id:'CW-02', name:'冷链箱位 CW-02', type:'cold_box', temp:-18, status:'booked',    price:120, unit:'元/天', pos:[-26, 1.6, -2] },
+  { id:'CW-03', name:'冷链箱位 CW-03', type:'cold_box', temp:-19, status:'available', price:120, unit:'元/天', pos:[-22, 1.6, -2] },
+  { id:'CW-04', name:'冷链箱位 CW-04', type:'cold_box', temp:-17, status:'available', price:120, unit:'元/天', pos:[-30, 1.6,  2] },
+  { id:'CW-05', name:'冷链箱位 CW-05', type:'cold_box', temp:-18, status:'booked',    price:120, unit:'元/天', pos:[-26, 1.6,  2] },
+  { id:'CW-06', name:'冷链箱位 CW-06', type:'cold_box', temp:-20, status:'available', price:120, unit:'元/天', pos:[-22, 1.6,  2] },
+  { id:'WH-01', name:'仓储位 WH-01',   type:'warehouse', temp:null, status:'available', price:8,   unit:'元/㎡/天', pos:[20, 2.4, -4] },
+  { id:'WH-02', name:'仓储位 WH-02',   type:'warehouse', temp:null, status:'booked',    price:8,   unit:'元/㎡/天', pos:[24, 2.4, -4] },
+  { id:'WH-03', name:'仓储位 WH-03',   type:'warehouse', temp:null, status:'available', price:8,   unit:'元/㎡/天', pos:[28, 2.4, -4] },
+  { id:'WH-04', name:'仓储位 WH-04',   type:'warehouse', temp:null, status:'offline',   price:8,   unit:'元/㎡/天', pos:[20, 2.4,  2] },
+  { id:'VH-01', name:'冷链运输车 VH-01', type:'vehicle', temp:-18, status:'available', price:350, unit:'元/趟', pos:[16, 1.4, 32] },
+  { id:'VH-02', name:'集卡 VH-02',      type:'vehicle', temp:null, status:'available', price:200, unit:'元/趟', pos:[21, 1.4, 32] },
+  { id:'VH-03', name:'集卡 VH-03',      type:'vehicle', temp:null, status:'booked',    price:200, unit:'元/趟', pos:[26, 1.4, 32] },
+  { id:'EQ-01', name:'正面吊 EQ-01',    type:'equipment', temp:null, status:'available', price:150, unit:'元/时', pos:[8, 1.4, 34] },
+  { id:'EQ-02', name:'叉车 EQ-02',      type:'equipment', temp:null, status:'pending',   price:60,  unit:'元/时', pos:[13, 1.4, 34] },
+];
+
+/* ================= Three.js 场景 ================= */
+const container = document.getElementById('scene-container');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x060d1a);
+scene.fog = new THREE.Fog(0x060d1a, 90, 260);
+
+const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 500);
+camera.position.set(62, 48, 66);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(container.clientWidth, container.clientHeight);
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 8);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.48;
+controls.minDistance = 30;
+controls.maxDistance = 160;
+controls.update();
+
+// 灯光
+scene.add(new THREE.AmbientLight(0x334455, 0.9));
+const dir = new THREE.DirectionalLight(0xffffff, 1.4);
+dir.position.set(60, 90, 40);
+scene.add(dir);
+const hemi = new THREE.HemisphereLight(0x4a6a9a, 0x0a1420, 0.6);
+scene.add(hemi);
+
+// 地面 + 网格
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(130, 100),
+  new THREE.MeshStandardMaterial({ color: 0x0a1420, roughness: 0.95 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.01;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(130, 65, 0x1e3a5f, 0x12243c);
+grid.position.y = 0.02;
+scene.add(grid);
+
+/* ---- 通用构建辅助 ---- */
+function zoneFloor(x, z, w, d, color) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d),
+    new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.22, roughness: 0.8 }));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, 0.05, z); scene.add(m);
+  const b = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, d)),
+    new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.6 }));
+  b.rotation.x = -Math.PI / 2; b.position.set(x, 0.08, z); scene.add(b);
+}
+
+function box(w, h, d, color, x, y, z, emissive = 0x000000) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.15, emissive, emissiveIntensity: 0.4 }));
+  m.position.set(x, y, z); scene.add(m);
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),
+    new THREE.LineBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.5 }));
+  e.position.copy(m.position); scene.add(e);
+  return m;
+}
+
+function makeLabel(text, x, y, z, scale = 11) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 30px "Microsoft YaHei"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#7dd3fc'; ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  s.position.set(x, y, z); s.scale.set(scale, scale / 4, 1); scene.add(s);
+  return s;
+}
+
+/* ---- 铁路专用线 + 班列 ---- */
+function buildRailway() {
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x3b4a5a, roughness: 0.7 });
+  for (const z of [-26, -25]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(120, 0.3, 0.5), railMat);
+    rail.position.set(0, 0.2, z); scene.add(rail);
+  }
+  for (let x = -60; x <= 60; x += 4) {
+    const tie = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 2.2),
+      new THREE.MeshStandardMaterial({ color: 0x2a3646 }));
+    tie.position.set(x, 0.12, -25.5); scene.add(tie);
+  }
+  // 班列：车头 + 若干集装箱车厢
+  const train = new THREE.Group();
+  const headMesh = new THREE.Mesh(new THREE.BoxGeometry(6, 3, 3),
+    new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5 }));
+  headMesh.position.set(0, 2.4, -25.5); train.add(headMesh);
+  const colors = [0x2dd4bf, 0xf59e0b, 0x38bdf8, 0x22c55e];
+  for (let i = 0; i < 6; i++) {
+    const c = new THREE.Mesh(new THREE.BoxGeometry(7, 3, 3),
+      new THREE.MeshStandardMaterial({ color: colors[i % colors.length], roughness: 0.6 }));
+    c.position.set((i + 1) * 8, 2.4, -25.5); train.add(c);
+  }
+  scene.add(train);
+  train.userData = { speed: 0.25 };
+  return train;
+}
+const train = buildRailway();
+
+/* ---- 冷链基地（左中）---- */
+zoneFloor(-26, 0, 16, 14, 0x2dd4bf);
+box(16, 5, 9, 0x1d4ed8, -26, 2.5, 0, 0x1e3a8a);          // 冷库主体
+box(8, 4, 7, 0x2563eb, -34, 2, 0, 0x1e40af);             // 冷库附属
+makeLabel('冷链基地', -26, 8, 0);
+
+/* ---- 仓储区（右中）---- */
+zoneFloor(24, 0, 16, 14, 0x22c55e);
+box(7, 6, 6, 0x334155, 20, 3, -2, 0x111827);
+box(7, 6, 6, 0x334155, 28, 3, -2, 0x111827);
+box(7, 6, 6, 0x334155, 20, 3, 4, 0x111827);
+makeLabel('仓储区', 24, 8, 0);
+
+/* ---- 集装箱堆场（前左）---- */
+zoneFloor(-15, 30, 30, 16, 0x38bdf8);
+const boxColors = [0x7dd3fc, 0xf59e0b, 0x22c55e, 0xef4444, 0x38bdf8];
+for (let i = 0; i < 6; i++) {
+  const bx = -26 + (i % 3) * 8;
+  const bz = 25 + Math.floor(i / 3) * 9;
+  const stacks = 1 + (i % 3);
+  for (let s = 0; s < stacks; s++) {
+    box(5.5, 2.5, 2.4, boxColors[(i + s) % boxColors.length], bx, 1.25 + s * 2.5, bz, 0x111827);
+  }
+}
+
+/* ---- 多式联运中心（前右）---- */
+zoneFloor(20, 30, 24, 16, 0xf59e0b);
+box(12, 5, 8, 0x713f12, 20, 2.5, 30, 0x451a03);
+makeLabel('多式联运中心', 20, 8, 30);
+
+/* ---- 资源标记（可点击）---- */
+const markers = [];
+const clickables = [];
+function buildMarker(r) {
+  const st = STATUS[r.status];
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.4, 2.2),
+    new THREE.MeshStandardMaterial({ color: 0x0e1a2c, roughness: 0.7 }));
+  base.position.y = 0.2; g.add(base);
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.2, 1.6),
+    new THREE.MeshStandardMaterial({ color: st.color, emissive: st.color, emissiveIntensity: 0.55, roughness: 0.4 }));
+  cube.position.y = 1.5; g.add(cube);
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(cube.geometry),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 }));
+  edge.position.copy(cube.position); g.add(edge);
+  g.position.set(r.pos[0], r.pos[1] - 0.2, r.pos[2]);
+  g.userData.resource = r;
+  cube.userData.resource = r;
+  scene.add(g);
+  markers.push({ cube, baseMat: cube.material });
+  clickables.push(cube);
+}
+resources.forEach(buildMarker);
+
+/* ---- 交互：点击选取 ---- */
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(clickables, false);
+  if (hits.length) {
+    showInfo(hits[0].object.userData.resource);
+  } else {
+    hideInfo();
+  }
+});
+
+/* ================= HUD 交互 ================= */
+const infoCard = document.getElementById('infoCard');
+function showInfo(r) {
+  const st = STATUS[r.status];
+  document.getElementById('icName').textContent = r.name;
+  document.getElementById('icTag').textContent = TYPE_LABEL[r.type] + ' · ' + r.id;
+  document.getElementById('icStatus').textContent = st.label;
+  document.getElementById('icStatus').style.color = '#' + st.color.toString(16).padStart(6, '0');
+  document.getElementById('icTemp').textContent = r.temp != null ? r.temp + ' ℃' : '—';
+  document.getElementById('icPrice').textContent = r.price + ' ' + r.unit;
+  document.getElementById('icLoc').textContent = '怀化国际陆港 · ' + (r.type === 'cold_box' ? '冷链基地' : r.type === 'warehouse' ? '仓储区' : r.type === 'vehicle' ? '多式联运中心' : '堆场');
+  infoCard.style.display = 'block';
+}
+function hideInfo() { infoCard.style.display = 'none'; }
+document.getElementById('infoClose').addEventListener('click', hideInfo);
+
+// 资源列表渲染
+const resList = document.getElementById('resList');
+function renderList() {
+  resList.innerHTML = '';
+  resources.forEach(r => {
+    const st = STATUS[r.status];
+    const el = document.createElement('div');
+    el.className = 'res-item';
+    el.innerHTML = `<span class="dot" style="background:#${st.color.toString(16).padStart(6,'0')};color:#${st.color.toString(16).padStart(6,'0')}"></span>
+      <span class="name">${r.name}</span><span class="st">${st.label}</span>`;
+    el.addEventListener('click', () => showInfo(r));
+    resList.appendChild(el);
+  });
+}
+renderList();
+
+// 时钟
+function tickClock() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  document.getElementById('clock').textContent =
+    `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/* ================= ECharts 图表 ================= */
+function darkAxis() {
+  return {
+    axisLine: { lineStyle: { color: '#1e3a5f' } },
+    axisLabel: { color: '#7d9bbd', fontSize: 10 },
+    splitLine: { lineStyle: { color: 'rgba(56,189,248,0.08)' } }
+  };
+}
+
+// 图1：近7日吞吐量
+const c1 = E.init(document.getElementById('chart1'));
+c1.setOption({
+  title: { text: '近 7 日吞吐量（万吨）', left: 6, top: 2, textStyle: { color: '#7dd3fc', fontSize: 12, fontWeight: 400 } },
+  tooltip: { trigger: 'axis' },
+  grid: { left: 40, right: 12, top: 30, bottom: 24 },
+  xAxis: { type: 'category', data: ['10-22','10-23','10-24','10-25','10-26','10-27','10-28'], ...darkAxis() },
+  yAxis: { type: 'value', ...darkAxis() },
+  series: [{
+    type: 'bar', data: [2.6, 3.1, 2.8, 3.4, 3.0, 3.5, 3.2], barWidth: 14,
+    itemStyle: { color: new E.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#38bdf8'},{offset:1,color:'#0e7490'}]), borderRadius: [3,3,0,0] }
+  }]
+});
+
+// 图2：资源状态分布
+const c2 = E.init(document.getElementById('chart2'));
+const statusCount = {};
+resources.forEach(r => statusCount[r.status] = (statusCount[r.status] || 0) + 1);
+c2.setOption({
+  title: { text: '资源状态分布', left: 6, top: 2, textStyle: { color: '#7dd3fc', fontSize: 12, fontWeight: 400 } },
+  tooltip: { trigger: 'item', formatter: '{b}: {c} 个 ({d}%)' },
+  legend: { bottom: 2, textStyle: { color: '#7d9bbd', fontSize: 10 }, itemWidth: 10, itemHeight: 10 },
+  series: [{
+    type: 'pie', radius: ['42%', '66%'], center: ['50%', '50%'],
+    label: { color: '#7d9bbd', fontSize: 10 },
+    data: [
+      { value: statusCount.available || 0, name: '可用', itemStyle: { color: '#2dd4bf' } },
+      { value: statusCount.booked || 0, name: '已预约', itemStyle: { color: '#f59e0b' } },
+      { value: statusCount.pending || 0, name: '待审核', itemStyle: { color: '#64748b' } },
+      { value: statusCount.offline || 0, name: '已下线', itemStyle: { color: '#334155' } },
+    ]
+  }]
+});
+
+// 图3：班列发运
+const c3 = E.init(document.getElementById('chart3'));
+c3.setOption({
+  title: { text: '班列发运（列）', left: 6, top: 2, textStyle: { color: '#7dd3fc', fontSize: 12, fontWeight: 400 } },
+  tooltip: { trigger: 'axis' },
+  grid: { left: 40, right: 12, top: 30, bottom: 24 },
+  xAxis: { type: 'category', data: ['5月','6月','7月','8月','9月','10月'], ...darkAxis() },
+  yAxis: { type: 'value', ...darkAxis() },
+  series: [{
+    type: 'line', data: [98, 112, 120, 128, 135, 128], smooth: true, symbol: 'circle', symbolSize: 5,
+    lineStyle: { color: '#f59e0b', width: 2 }, itemStyle: { color: '#f59e0b' },
+    areaStyle: { color: new E.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(245,158,11,0.35)'},{offset:1,color:'rgba(245,158,11,0)'}]) }
+  }]
+});
+
+/* ================= 实时模拟 ================= */
+const alertsEl = document.getElementById('alerts');
+let alertSeq = 0;
+function pushAlert(level, msg) {
+  const d = new Date();
+  const el = document.createElement('div');
+  el.className = 'alert ' + level;
+  el.innerHTML = msg + `<span class="t">${d.toLocaleTimeString('zh-CN', { hour12: false })} · #${++alertSeq}</span>`;
+  alertsEl.prepend(el);
+  while (alertsEl.children.length > 20) alertsEl.lastChild.remove();
+}
+pushAlert('critical', '冷链箱位 CW-02 温度异常：-8.2℃（阈值 ≤ -15℃）');
+pushAlert('warn', '冷链箱位 CW-05 湿度偏高：82%RH');
+pushAlert('info', '集卡 VH-03 已预约，时段 14:00-18:00');
+
+function simTick() {
+  // 冷链均温抖动
+  const temp = (-18.5 + (Math.random() - 0.5) * 1.2).toFixed(1);
+  document.getElementById('kpi-temp').textContent = temp + ' ℃';
+  // 随机新增一条告警
+  if (Math.random() < 0.12) {
+    const types = [
+      ['info', '新资源发布：冷链箱位 CW-06 已上线'],
+      ['info', '订单已确认：仓储位 WH-01'],
+      ['warn', '设备 EQ-02 待审核'],
+    ];
+    const t = types[Math.floor(Math.random() * types.length)];
+    pushAlert(t[0], t[1]);
+  }
+}
+
+/* ================= 动画循环 ================= */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 班列移动
+  train.position.x = (train.position.x + train.userData.speed) % 96 - 48;
+
+  // 资源标记脉冲
+  markers.forEach((m, i) => {
+    m.cube.material.emissiveIntensity = 0.35 + Math.sin(t * 2 + i) * 0.3;
+    m.cube.scale.y = 1 + Math.sin(t * 2 + i) * 0.08;
+  });
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================= 其它定时器 & 自适应 ================= */
+setInterval(tickClock, 1000);
+setInterval(simTick, 3000);
+tickClock();
+simTick();
+
+window.addEventListener('resize', () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  [c1, c2, c3].forEach(c => c.resize());
+});
+</script>
+</body>
+</html>

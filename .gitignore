@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.vite/
+.pytest_cache/
+
+# 密钥与本地配置（勿提交）
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# 日志与临时文件
+*.log
+.DS_Store
+
+# 编辑器本地配置
+.vscode/
+.idea/

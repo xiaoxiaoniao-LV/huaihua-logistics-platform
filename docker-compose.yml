@@ -1,0 +1,142 @@
+# 怀化国际陆港物流资源共享与智能撮合平台 —— 生产栈
+#
+# 启动：docker compose up -d --build
+# 带模拟设备数据：docker compose --profile demo up -d --build
+# 停止：docker compose down
+# 数据保留：MySQL 数据在命名卷 mysql_data 中，down 不会删除
+#
+# 宿主机端口可通过根目录 .env 覆盖，默认值已避开本机其他项目的占用：
+#   HHLG_WEB_PORT=8080   前端（Nginx）
+#   HHLG_API_PORT=8010   后端直连（调试用）
+#   HHLG_MYSQL_PORT=3307 MySQL
+#   HHLG_MQTT_PORT=1884  MQTT（设备接入）
+#   HHLG_EMQX_DASH_PORT=18084  EMQX 控制台
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: hhlg-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: huaihua_logistics
+      MYSQL_USER: ${MYSQL_USER:-logistics}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-logistics123}
+      TZ: Asia/Shanghai
+    ports:
+      - "${HHLG_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: hhlg-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  emqx:
+    image: emqx/emqx:5.7
+    container_name: hhlg-emqx
+    restart: unless-stopped
+    environment:
+      EMQX_NODE__NAME: emqx@127.0.0.1
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASH_PASSWORD:-public123}
+      TZ: Asia/Shanghai
+    ports:
+      - "${HHLG_MQTT_PORT:-1884}:1883"
+      - "${HHLG_EMQX_DASH_PORT:-18084}:18083"
+    volumes:
+      - emqx_data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+    image: hhlg-backend:latest
+    container_name: hhlg-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-logistics}:${MYSQL_PASSWORD:-logistics123}@mysql:3306/huaihua_logistics?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      MQTT_HOST: emqx
+      MQTT_PORT: "1883"
+      JWT_SECRET: ${JWT_SECRET:?请在根目录 .env 中设置 JWT_SECRET}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      REFRESH_TOKEN_EXPIRE_MINUTES: ${REFRESH_TOKEN_EXPIRE_MINUTES:-10080}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-900}
+      CORS_ORIGINS: http://localhost:${HHLG_WEB_PORT:-8080},http://127.0.0.1:${HHLG_WEB_PORT:-8080}
+      DEVICE_INGEST_TOKEN: ${DEVICE_INGEST_TOKEN:-}
+      DEVICE_OFFLINE_SECONDS: ${DEVICE_OFFLINE_SECONDS:-90}
+      ALERT_TEMP_MIN: ${ALERT_TEMP_MIN:--30}
+      ALERT_TEMP_MAX: ${ALERT_TEMP_MAX:--5}
+      ALERT_HUMIDITY_MAX: ${ALERT_HUMIDITY_MAX:-90}
+      TZ: Asia/Shanghai
+    ports:
+      - "${HHLG_API_PORT:-8010}:8000"
+
+  frontend:
+    build:
+      context: ./frontend-vue
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    image: hhlg-frontend:latest
+    container_name: hhlg-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HHLG_WEB_PORT:-8080}:80"
+
+  # 可选：模拟 IoT 设备（无真实硬件时用于演示）
+  simulator:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: iot/Dockerfile
+    image: hhlg-simulator:latest
+    container_name: hhlg-simulator
+    restart: unless-stopped
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      MQTT_HOST: emqx
+      MQTT_PORT: "1883"
+      PUBLISH_INTERVAL: ${PUBLISH_INTERVAL:-3}
+      TZ: Asia/Shanghai
+
+volumes:
+  mysql_data:
+  redis_data:
+  emqx_data:

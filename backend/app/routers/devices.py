@@ -1,21 +1,31 @@
-"""设备管理：注册、查询、绑定资源、上下线、遥测历史。
+"""设备管理：注册、查询、绑定资源、上下线、遥测历史、批量导入与固件 OTA。
 
 设备与资源是多对一关系：一个资源（冷链箱/仓库）可挂多个传感器，
 设备表通过 resource_id 关联；resource_id=0 表示尚未绑定。
 """
+import csv
+import io
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
+from .. import mqtt_client
 from ..database import get_db
 from ..deps import get_current_user, require_admin
-from ..models import IoTData, IoTDevice, Resource, User
-from ..schemas.device import DeviceCreate, DeviceOut, DeviceUpdate
+from ..models import IoTData, IoTDevice, OTATask, Resource, User
+from ..schemas.device import (
+    DeviceCreate, DeviceOut, DeviceUpdate,
+    ImportErrorItem, ImportResult, OTAReport, OTARequest, OTATaskOut,
+)
+from .iot import _verify_device_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+
+_MAX_IMPORT_ROWS = 500
 
 
 def _ensure_can_manage(current: User, dev: IoTDevice, db: Session) -> None:
@@ -47,6 +57,7 @@ def _to_out(db: Session, dev: IoTDevice) -> DeviceOut:
         device_type=dev.device_type,
         resource_id=dev.resource_id or 0,
         status=dev.status or "offline",
+        firmware_version=dev.firmware_version or "1.0.0",
         resource_name=resource.name if resource else None,
         last_seen=last.recorded_at if last else None,
         last_temperature=last.temperature if last else None,
@@ -200,3 +211,218 @@ def auto_bind(
     db.commit()
     logger.info("[devices] auto-bind 完成，绑定 %d 台设备", bound)
     return {"bound": bound, "detail": f"已绑定 {bound} 台设备"}
+
+
+# ---------------- 批量导入 ----------------
+
+@router.post("/import", response_model=ImportResult)
+async def import_devices(
+    file: UploadFile = File(...),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """按 CSV 批量注册设备。
+
+    表头：device_code,device_type,resource_id,firmware_version
+    仅 device_code 必填；编码重复的设备跳过，资源不存在等错误逐行返回。
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件需为 UTF-8 编码的 CSV")
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "CSV 至少需要表头和一行数据")
+    if len(lines) - 1 > _MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"单次最多导入 {_MAX_IMPORT_ROWS} 行"
+        )
+
+    reader = csv.DictReader(io.StringIO(text))
+    header = {(name or "").strip().lower(): name for name in (reader.fieldnames or [])}
+    if "device_code" not in header:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "CSV 缺少 device_code 列，示例表头：device_code,device_type,resource_id,firmware_version",
+        )
+
+    def cell(row: dict, key: str) -> str:
+        return (row.get(header[key]) or "").strip() if key in header else ""
+
+    created = skipped = 0
+    errors: list[ImportErrorItem] = []
+    pending: list[IoTDevice] = []
+    seen: set[str] = set()
+    existing = {d.device_code for d in db.query(IoTDevice.device_code).all()}
+
+    for offset, row in enumerate(reader, start=2):
+        code = cell(row, "device_code")
+        if not code:
+            errors.append(ImportErrorItem(row=offset, reason="device_code 不能为空"))
+            continue
+        if len(code) > 50:
+            errors.append(ImportErrorItem(row=offset, device_code=code, reason="device_code 超过 50 字符"))
+            continue
+        if code in seen:
+            errors.append(ImportErrorItem(row=offset, device_code=code, reason="文件内编码重复"))
+            continue
+        seen.add(code)
+        if code in existing:
+            skipped += 1
+            continue
+
+        raw_resource = cell(row, "resource_id")
+        resource_id = 0
+        if raw_resource:
+            try:
+                resource_id = int(raw_resource)
+            except ValueError:
+                errors.append(ImportErrorItem(row=offset, device_code=code, reason="resource_id 必须是整数"))
+                continue
+            if resource_id and db.get(Resource, resource_id) is None:
+                errors.append(ImportErrorItem(row=offset, device_code=code, reason=f"资源 {resource_id} 不存在"))
+                continue
+
+        firmware = cell(row, "firmware_version") or "1.0.0"
+        if len(firmware) > 20:
+            errors.append(ImportErrorItem(row=offset, device_code=code, reason="firmware_version 超过 20 字符"))
+            continue
+
+        pending.append(IoTDevice(
+            device_code=code,
+            device_type=cell(row, "device_type")[:30] or None,
+            resource_id=resource_id,
+            status="offline",
+            firmware_version=firmware,
+        ))
+
+    if pending:
+        db.add_all(pending)
+        db.commit()
+        created = len(pending)
+
+    logger.info(
+        "[devices] 批量导入：新增 %d，跳过 %d，失败 %d（操作人 %s）",
+        created, skipped, len(errors), admin.username,
+    )
+    return ImportResult(created=created, skipped=skipped, failed=len(errors), errors=errors)
+
+
+# ---------------- 固件 OTA ----------------
+
+@router.post("/ota", response_model=list[OTATaskOut])
+def create_ota_job(
+    data: OTARequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """为目标版本低于 target_version 的设备批量创建升级任务，并通过 MQTT 下发指令。"""
+    target = data.target_version.strip()
+    if not target:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标版本不能为空")
+
+    q = db.query(IoTDevice)
+    if data.device_ids:
+        q = q.filter(IoTDevice.id.in_(data.device_ids))
+    devices = q.order_by(IoTDevice.id).all()
+    if not devices:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有符合条件的设备")
+
+    tasks: list[tuple[OTATask, IoTDevice]] = []
+    for dev in devices:
+        current = dev.firmware_version or "1.0.0"
+        if current == target:
+            continue
+        task = OTATask(
+            device_id=dev.id,
+            from_version=current,
+            target_version=target,
+            status="pending",
+        )
+        db.add(task)
+        tasks.append((task, dev))
+    if not tasks:
+        return []
+    db.commit()  # 先落库，避免设备回执早于任务提交
+
+    for task, dev in tasks:
+        if mqtt_client.publish(
+            f"iot/{dev.device_code}/cmd",
+            {"action": "ota", "task_id": task.id, "target_version": target},
+        ):
+            task.status = "running"
+    db.commit()
+
+    codes = {d.id: d.device_code for d in devices}
+    logger.info(
+        "[devices] OTA 下发：目标版本 %s，任务 %d 个（操作人 %s）",
+        target, len(tasks), admin.username,
+    )
+    return [
+        OTATaskOut(
+            id=t.id, device_id=t.device_id, device_code=codes.get(t.device_id),
+            from_version=t.from_version, target_version=t.target_version,
+            status=t.status, message=t.message,
+            created_at=t.created_at, finished_at=t.finished_at,
+        )
+        for t, _dev in tasks
+    ]
+
+
+@router.get("/ota", response_model=list[OTATaskOut])
+def list_ota_tasks(
+    limit: int = Query(20, ge=1, le=200),
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """最近升级任务；管理员看全部，普通用户只看自己资源上的设备。"""
+    q = db.query(OTATask, IoTDevice).join(IoTDevice, OTATask.device_id == IoTDevice.id)
+    if current.role != "admin":
+        owned = {r.id for r in db.query(Resource.id).filter(Resource.user_id == current.id).all()}
+        if not owned:
+            return []
+        q = q.filter(IoTDevice.resource_id.in_(owned))
+    rows = q.order_by(OTATask.id.desc()).limit(limit).all()
+    return [
+        OTATaskOut(
+            id=t.id, device_id=t.device_id, device_code=dev.device_code,
+            from_version=t.from_version, target_version=t.target_version,
+            status=t.status, message=t.message,
+            created_at=t.created_at, finished_at=t.finished_at,
+        )
+        for t, dev in rows
+    ]
+
+
+@router.post("/ota/report", dependencies=[Depends(_verify_device_token)])
+def report_ota(data: OTAReport, db: Session = Depends(get_db)):
+    """设备上报升级结果：成功后更新设备固件版本。"""
+    dev = db.query(IoTDevice).filter(IoTDevice.device_code == data.device_code).first()
+    if dev is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "设备不存在")
+    task = (
+        db.query(OTATask)
+        .filter(OTATask.device_id == dev.id, OTATask.target_version == data.target_version)
+        .order_by(OTATask.id.desc())
+        .first()
+    )
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有对应的升级任务")
+
+    task.status = "success" if data.success else "failed"
+    task.message = (data.message or "")[:255] or None
+    task.finished_at = datetime.now()
+    if data.success:
+        dev.firmware_version = data.target_version
+    db.commit()
+    logger.info(
+        "[devices] OTA 回执：%s %s → %s，结果 %s",
+        dev.device_code, task.from_version, task.target_version, task.status,
+    )
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "firmware_version": dev.firmware_version,
+    }

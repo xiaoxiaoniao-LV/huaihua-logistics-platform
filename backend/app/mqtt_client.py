@@ -41,6 +41,9 @@ def _on_message(_cli, _userdata, msg):
                 db.refresh(dev)
             # 在 session 关闭前取出，避免 detach 后访问属性报错
             resource_id = dev.resource_id or 0
+            version = payload.get("firmware_version")
+            if version and dev.firmware_version != version:
+                dev.firmware_version = version
             row = IoTData(
                 device_id=dev.id,
                 temperature=payload.get("temperature"),

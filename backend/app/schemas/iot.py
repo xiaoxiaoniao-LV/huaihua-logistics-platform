@@ -10,6 +10,7 @@ class IoTDataReport(BaseModel):
     humidity: float | None = None
     longitude: float | None = None
     latitude: float | None = None
+    firmware_version: str | None = None
 
 
 class IoTDataOut(BaseModel):

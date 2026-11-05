@@ -12,6 +12,22 @@ class IoTDevice(Base):
     device_code = Column(String(50), unique=True, nullable=False)
     device_type = Column(String(30))
     status = Column(String(20), default="offline")  # online / offline
+    firmware_version = Column(String(20), nullable=False, default="1.0.0")
+
+
+class OTATask(Base):
+    """固件升级任务：一台设备一次升级一条记录。"""
+
+    __tablename__ = "ota_tasks"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    device_id = Column(BigInteger, nullable=False, index=True)
+    from_version = Column(String(20))
+    target_version = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")  # pending/running/success/failed
+    message = Column(String(255))
+    created_at = Column(DateTime, server_default=func.now())
+    finished_at = Column(DateTime)
 
 
 class IoTData(Base):

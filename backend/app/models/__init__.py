@@ -3,10 +3,10 @@ from .user import User
 from .resource import Resource
 from .order import Order
 from .review import Review
-from .iot import IoTDevice, IoTData, Alert, AlertRule
+from .iot import IoTDevice, IoTData, Alert, AlertRule, OTATask
 from .audit import AuditLog
 
 __all__ = [
     "User", "Resource", "Order", "Review",
-    "IoTDevice", "IoTData", "Alert", "AlertRule", "AuditLog",
+    "IoTDevice", "IoTData", "Alert", "AlertRule", "OTATask", "AuditLog",
 ]

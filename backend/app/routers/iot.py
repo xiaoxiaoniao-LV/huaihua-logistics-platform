@@ -66,7 +66,7 @@ def _rc():
         return None
 
 
-def _ensure_device(db: Session, device_code: str) -> IoTDevice:
+def _ensure_device(db: Session, device_code: str, firmware_version: str | None = None) -> IoTDevice:
     """确保设备存在；不存在则自动建一条（演示阶段简化处理）。"""
     dev = db.query(IoTDevice).filter(IoTDevice.device_code == device_code).first()
     if dev is None:
@@ -75,13 +75,20 @@ def _ensure_device(db: Session, device_code: str) -> IoTDevice:
             device_code=device_code,
             device_type="esp32",
             status="online",
+            firmware_version=firmware_version or "1.0.0",
         )
         db.add(dev)
         db.commit()
         db.refresh(dev)
     else:
+        changed = False
         if dev.status != "online":
             dev.status = "online"
+            changed = True
+        if firmware_version and dev.firmware_version != firmware_version:
+            dev.firmware_version = firmware_version
+            changed = True
+        if changed:
             db.commit()
     return dev
 
@@ -134,7 +141,7 @@ def _verify_device_token(x_device_token: str | None = Header(None, alias="X-Devi
 
 @router.post("/data", status_code=status.HTTP_201_CREATED, dependencies=[Depends(_verify_device_token)])
 def report_data(payload: IoTDataReport, db: Session = Depends(get_db)):
-    dev = _ensure_device(db, payload.device_code)
+    dev = _ensure_device(db, payload.device_code, payload.firmware_version)
     now = datetime.now()
     row = IoTData(
         device_id=dev.id,

@@ -17,17 +17,22 @@ const match = useMatchStore()
             <span class="score">{{ r.match_score.toFixed(1) }}</span>
           </div>
           <div class="match-score-bar">
-            <div class="bar-inner" :style="{ width: `${Math.min(100, r.match_score)}%` }"></div>
+            <div class="bar-inner" :style="{ width: `${Math.min(100, (r.match_score / 120) * 100)}%` }"></div>
           </div>
           <div class="match-meta">
             <span class="type-tag">{{ r.type }}</span>
             <span v-if="r.price != null" class="price-tag">¥{{ r.price }}/{{ r.price_unit || '天' }}</span>
+          </div>
+          <div v-if="r.reasons?.length" class="reasons">
+            <span v-for="reason in r.reasons" :key="reason" class="reason">{{ reason }}</span>
           </div>
           <div v-if="r.score_breakdown" class="breakdown">
             <span class="bd-item"><i class="dot dot-price"></i>价格 {{ r.score_breakdown.price_score.toFixed(1) }}<em>/30</em></span>
             <span class="bd-item"><i class="dot dot-credit"></i>信用 {{ r.score_breakdown.credit_score.toFixed(1) }}<em>/20</em></span>
             <span class="bd-item"><i class="dot dot-window"></i>窗口 {{ r.score_breakdown.window_score.toFixed(1) }}<em>/20</em></span>
             <span class="bd-item"><i class="dot dot-type"></i>类型 {{ r.score_breakdown.type_match.toFixed(0) }}<em>/10</em></span>
+            <span class="bd-item"><i class="dot dot-rating"></i>口碑 {{ r.score_breakdown.rating_score.toFixed(1) }}<em>/15</em></span>
+            <span class="bd-item"><i class="dot dot-hot"></i>热度 {{ r.score_breakdown.hotness_score.toFixed(1) }}<em>/10</em></span>
           </div>
         </div>
       </div>
@@ -74,6 +79,15 @@ const match = useMatchStore()
   background: rgba(64,158,255,0.15); color: var(--accent); font-size: 10px;
 }
 .price-tag { color: var(--accent-orange); }
+.reasons {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 5px;
+}
+.reason {
+  padding: 1px 6px; border-radius: 8px;
+  background: rgba(103, 194, 58, 0.12);
+  color: #67c23a; font-size: 10px;
+}
 .breakdown {
   display: flex; flex-wrap: wrap; gap: 6px 12px;
   margin-top: 6px; padding-top: 6px;
@@ -87,5 +101,7 @@ const match = useMatchStore()
 .dot-credit { background: #00e5ff; }
 .dot-window { background: #67c23a; }
 .dot-type { background: #ff9f43; }
+.dot-rating { background: #f56c6c; }
+.dot-hot { background: #b37feb; }
 .empty { text-align: center; color: var(--text-muted); padding: 20px; font-size: 12px; }
 </style>

@@ -30,6 +30,23 @@ def get_current_user(
     return user
 
 
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """可选登录：未带令牌或令牌无效时返回 None，不中断请求。"""
+    if credentials is None:
+        return None
+    try:
+        payload = security.decode_access_token(credentials.credentials)
+    except Exception:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    return db.get(User, int(user_id))
+
+
 def require_admin(current: User = Depends(get_current_user)) -> User:
     """仅管理员可访问。"""
     if current.role != "admin":

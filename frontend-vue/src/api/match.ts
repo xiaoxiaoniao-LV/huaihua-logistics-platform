@@ -5,6 +5,10 @@ export interface ScoreBreakdown {
   credit_score: number
   window_score: number
   type_match: number
+  rating_score: number
+  hotness_score: number
+  freshness_score: number
+  preference_score: number
 }
 
 export interface MatchResult {
@@ -17,6 +21,7 @@ export interface MatchResult {
   status?: string
   match_score: number
   score_breakdown?: ScoreBreakdown
+  reasons?: string[]
 }
 
 export function recommend(params: {

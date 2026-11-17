@@ -1,0 +1,19 @@
+{
+  "name": "怀化陆港冷链撮合",
+  "appid": "__UNI__HHLG01",
+  "description": "怀化国际陆港冷链资源智能撮合平台 · 需求端（虚拟构建）",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "h5": {
+    "title": "怀化陆港冷链撮合 · 需求端",
+    "router": { "mode": "hash" }
+  },
+  "mp-weixin": {
+    "appid": "touristappid",
+    "setting": { "urlCheck": false, "es6": true, "minified": true },
+    "usingComponents": true
+  },
+  "mp-alipay": { "usingComponents": true },
+  "uniStatistics": { "enable": false }
+}

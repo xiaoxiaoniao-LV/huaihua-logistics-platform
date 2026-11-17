@@ -5,13 +5,18 @@
 """
 import csv
 import io
+import json
 import logging
+import re
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from .. import mqtt_client
+from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, require_admin
 from ..models import IoTData, IoTDevice, OTATask, Resource, User
@@ -23,9 +28,26 @@ from .iot import _verify_device_token
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/devices", tags=["devices"])
+router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
 _MAX_IMPORT_ROWS = 500
+
+# OTA 版本目录名 / 分发文件名白名单：只允许安全字符，防止路径穿越
+_FW_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,19}$")
+_FW_FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\.py$")
+# 节点专属配置与 MicroPython 启动脚本永不参与分发（否则会覆盖节点身份/引脚配置）
+_FW_EXCLUDED_FILES = {"config.py", "boot.py"}
+
+
+def _fw_version_dir(version: str) -> Path:
+    """把版本号解析为固件仓库下的版本目录，并阻止越出仓库根目录。"""
+    if not _FW_VERSION_RE.match(version or ""):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "版本号格式不合法")
+    root = Path(settings.fw_repo_dir).resolve()
+    folder = (root / version).resolve()
+    if folder.parent != root or not folder.is_dir():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"固件版本 {version} 不存在")
+    return folder
 
 
 def _ensure_can_manage(current: User, dev: IoTDevice, db: Session) -> None:
@@ -394,6 +416,47 @@ def list_ota_tasks(
         )
         for t, dev in rows
     ]
+
+
+@router.get("/ota/manifest/{version}", dependencies=[Depends(_verify_device_token)])
+def get_ota_manifest(version: str):
+    """设备拉取升级清单（文件级 OTA 第一步）。
+
+    清单由 `iot/tools/make_release.py` 生成：
+    {"version": "3.1.0", "files": [{"name": "main.py", "size": 123, "sha256": "..."}]}
+    节点专属的 config.py / boot.py 始终从清单中剔除。
+    """
+    folder = _fw_version_dir(version)
+    path = folder / "manifest.json"
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "该版本缺少 manifest.json")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.error("[devices] 固件 manifest 解析失败 %s: %s", path, e)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "manifest.json 无法解析")
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "manifest.json 结构不合法")
+
+    manifest["version"] = manifest.get("version") or version
+    manifest["files"] = [
+        item
+        for item in manifest["files"]
+        if isinstance(item, dict) and str(item.get("name", "")) not in _FW_EXCLUDED_FILES
+    ]
+    return manifest
+
+
+@router.get("/ota/file/{version}/{filename}", dependencies=[Depends(_verify_device_token)])
+def download_ota_file(version: str, filename: str):
+    """设备下载单个固件文件（文件级 OTA 第二步），只允许 .py 且不接受 config.py。"""
+    folder = _fw_version_dir(version)
+    if not _FW_FILE_RE.match(filename) or filename in _FW_EXCLUDED_FILES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "文件名不合法")
+    path = (folder / filename).resolve()
+    if path.parent != folder or not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "固件文件不存在")
+    return FileResponse(path, media_type="text/x-python", filename=filename)
 
 
 @router.post("/ota/report", dependencies=[Depends(_verify_device_token)])

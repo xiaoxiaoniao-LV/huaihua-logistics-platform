@@ -28,8 +28,15 @@ def verify_password(password: str, hashed: str) -> bool:
     return secrets.compare_digest(dk, check)
 
 
-def create_access_token(subject: str, extra: dict | None = None) -> str:
-    payload = {"sub": subject, "type": "access"}
+def create_access_token(
+    subject: str, extra: dict | None = None, client: str = "admin"
+) -> str:
+    """签发访问令牌。
+
+    `client` 声明调用方终端：admin（运营后台）/ supplier（供给工作台）/
+    app（需求端）/ screen（指挥大屏）。后端按域鉴权，不依赖前端路由隔离。
+    """
+    payload = {"sub": subject, "type": "access", "client": client}
     if extra:
         payload.update(extra)
     payload["exp"] = datetime.now(timezone.utc) + timedelta(
@@ -38,9 +45,11 @@ def create_access_token(subject: str, extra: dict | None = None) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(subject: str, extra: dict | None = None) -> str:
+def create_refresh_token(
+    subject: str, extra: dict | None = None, client: str = "admin"
+) -> str:
     """刷新令牌：有效期更长，仅用于换取新的 access token。"""
-    payload = {"sub": subject, "type": "refresh"}
+    payload = {"sub": subject, "type": "refresh", "client": client}
     if extra:
         payload.update(extra)
     payload["exp"] = datetime.now(timezone.utc) + timedelta(

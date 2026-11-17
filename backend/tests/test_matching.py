@@ -30,7 +30,7 @@ def test_recommend_returns_breakdown_sorted_by_score(client, make_user, make_res
     _mk(make_resource, sup, "100.00")
     _mk(make_resource, sup, "200.00")
 
-    r = client.get("/api/match/recommend", params={"type": "cold_box", "top_n": 3})
+    r = client.get("/api/v1/match/recommend", params={"type": "cold_box", "top_n": 3})
     assert r.status_code == 200
     results = r.json()["results"]
     assert len(results) == 3
@@ -55,7 +55,7 @@ def test_recommend_respects_max_price_filter(client, make_user, make_resource):
     _mk(make_resource, sup, "100.00")
     _mk(make_resource, sup, "300.00")
 
-    r = client.get("/api/match/recommend", params={"type": "cold_box", "max_price": 120, "top_n": 10})
+    r = client.get("/api/v1/match/recommend", params={"type": "cold_box", "max_price": 120, "top_n": 10})
     prices = [float(x["price"]) for x in r.json()["results"]]
     assert len(prices) == 2
     assert max(prices) <= 120
@@ -66,7 +66,7 @@ def test_recommend_excludes_non_available(client, make_user, make_resource):
     make_resource(sup)  # pending，不可预约
     _mk(make_resource, sup, "80.00")
 
-    r = client.get("/api/match/recommend", params={"type": "cold_box", "top_n": 10})
+    r = client.get("/api/v1/match/recommend", params={"type": "cold_box", "top_n": 10})
     results = r.json()["results"]
     assert len(results) == 1
     assert float(results[0]["price"]) == 80.0
@@ -75,7 +75,7 @@ def test_recommend_excludes_non_available(client, make_user, make_resource):
 def test_recommend_empty_when_no_available(client, make_user, make_resource):
     sup = make_user(role="supplier")
     make_resource(sup)
-    r = client.get("/api/match/recommend", params={"type": "cold_box"})
+    r = client.get("/api/v1/match/recommend", params={"type": "cold_box"})
     assert r.json()["count"] == 0
 
 
@@ -87,7 +87,7 @@ def test_supplier_rating_boosts_ranking(client, make_user, make_resource):
     _mk(make_resource, plain, "100.00")
     _mk(make_resource, good, "100.00")
 
-    results = client.get("/api/match/recommend", params={"top_n": 10}).json()["results"]
+    results = client.get("/api/v1/match/recommend", params={"top_n": 10}).json()["results"]
     assert results[0]["price"] == 100.0
     assert results[0]["score_breakdown"]["rating_score"] == 15.0
     assert any("口碑" in x for x in results[0]["reasons"])
@@ -98,7 +98,7 @@ def test_supplier_rating_boosts_ranking(client, make_user, make_resource):
 def test_reasons_and_new_dimensions_present(client, make_user, make_resource):
     sup = make_user(role="supplier")
     _mk(make_resource, sup, "50.00")
-    r = client.get("/api/match/recommend", params={"top_n": 5}).json()["results"][0]
+    r = client.get("/api/v1/match/recommend", params={"top_n": 5}).json()["results"][0]
     bd = r["score_breakdown"]
     for key in ("rating_score", "hotness_score", "freshness_score", "preference_score"):
         assert key in bd
@@ -116,7 +116,7 @@ def test_logged_in_user_gets_preference_bonus(client, make_user, make_resource):
     _mk(make_resource, sup, "100.00", type="cold_box")
 
     results = client.get(
-        "/api/match/recommend", params={"top_n": 10}, headers=demander["headers"]
+        "/api/v1/match/recommend", params={"top_n": 10}, headers=demander["headers"]
     ).json()["results"]
     cold = next(x for x in results if x["type"] == "cold_box")
     warehouse = next(x for x in results if x["type"] == "warehouse")
@@ -126,5 +126,5 @@ def test_logged_in_user_gets_preference_bonus(client, make_user, make_resource):
     assert results[0]["type"] == "cold_box"
 
     # 未登录时不带个性化加分
-    anon = client.get("/api/match/recommend", params={"top_n": 10}).json()["results"]
+    anon = client.get("/api/v1/match/recommend", params={"top_n": 10}).json()["results"]
     assert all(x["score_breakdown"]["preference_score"] == 0.0 for x in anon)

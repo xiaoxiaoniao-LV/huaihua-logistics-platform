@@ -1,11 +1,16 @@
 """全局配置：从环境变量 / .env 读取。"""
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 代码仓根目录（backend/app/config.py → 仓库根）
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "怀化国际陆港物流资源共享与智能撮合平台"
+    app_name: str = "怀化国际陆港冷链资源智能撮合平台"
 
     database_url: str = (
         "mysql+pymysql://logistics:logistics123@localhost:3306/"
@@ -37,10 +42,19 @@ class Settings(BaseSettings):
     # 设备超过该秒数未上报即判定为离线
     device_offline_seconds: int = 90
 
+    # 固件仓库目录：存放 releases/<version>/{manifest.json, *.py}，供设备文件级 OTA 拉取
+    # 本地默认指向仓库内 iot/firmware/releases；Docker 中由 FW_REPO_DIR=/app/fw/releases 覆盖
+    fw_repo_dir: str = str(_REPO_ROOT / "iot" / "firmware" / "releases")
+
     # 告警阈值默认值（可被 alert_rules 表中的全局/单资源规则覆盖）
     alert_temp_min: float = -30.0
     alert_temp_max: float = -5.0
     alert_humidity_max: float = 90.0
+
+    # 支付：sandbox=本机模拟支付（不联网）；off=仅线下合同
+    payment_mode: str = "sandbox"
+    alipay_app_id: str = ""
+    alipay_gateway: str = "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
 
     @property
     def cors_origin_list(self) -> list[str]:

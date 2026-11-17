@@ -9,7 +9,7 @@ from ..database import get_db
 from ..deps import require_admin
 from ..models import Alert, IoTDevice, Order, Resource, Review, User
 
-router = APIRouter(prefix="/api/stats", tags=["stats"])
+router = APIRouter(prefix="/api/v1/stats", tags=["stats"])
 
 
 def _count_by(rows) -> dict[str, int]:
@@ -136,7 +136,7 @@ def resource_stats(_admin: User = Depends(require_admin), db: Session = Depends(
         .group_by(Resource.type, Resource.status)
         .all()
     )
-    type_names = {"warehouse": "仓库", "cold_box": "冷链箱", "vehicle": "运力", "equipment": "设备"}
+    type_names = {"warehouse": "冷库", "cold_box": "冷链箱位", "vehicle": "冷藏运输", "equipment": "温控设备"}
 
     stats: dict[str, dict] = {}
     for rtype, rstatus, count in rows:

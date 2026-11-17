@@ -8,7 +8,7 @@ from ..deps import get_current_user, require_admin
 from ..models import User
 from ..schemas.user import UserAdminUpdate, UserOut, UserUpdate
 
-router = APIRouter(prefix="/api/users", tags=["users"])
+router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
 @router.get("/me", response_model=UserOut)

@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import models  # noqa: F401  确保模型注册到 Base.metadata
+from .api.v1 import api_router
 from .config import settings
-from .routers import audit, auth, devices, iot, match, orders, resources, reviews, stats, users, ws
+from .routers import ws
 from .ws_broadcast import hub
 
 # 应用日志级别（uvicorn 只配了 uvicorn.* ，app.* 需单独开）
@@ -23,13 +24,16 @@ async def lifespan(app: FastAPI):
     # 启动 MQTT 订阅后台线程（连接 drone_emqx，已 healthy）
     from . import mqtt_client
     mqtt_client.start_mqtt(settings.mqtt_host, settings.mqtt_port)
-    # 设备离线检测常驻协程
-    from .tasks import device_watchdog
+    # 设备离线检测 / outbox 投递 / 订单超时关闭 三个常驻协程
+    from .tasks import device_watchdog, order_timeout_watchdog, outbox_worker
     watchdog = asyncio.create_task(device_watchdog())
+    outbox = asyncio.create_task(outbox_worker())
+    order_timeout = asyncio.create_task(order_timeout_watchdog())
     try:
         yield
     finally:
-        watchdog.cancel()
+        for task in (watchdog, outbox, order_timeout):
+            task.cancel()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -42,19 +46,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(users.router)
-app.include_router(resources.router)
-app.include_router(orders.router)
-app.include_router(match.router)
-app.include_router(iot.router)
-app.include_router(devices.router)
-app.include_router(reviews.router)
-app.include_router(stats.router)
-app.include_router(audit.router)
+app.include_router(api_router)
 app.include_router(ws.router)
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": settings.app_name}
+    from . import mqtt_client, redis_client
+
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        # 供前端状态芯片显示真实依赖状态，避免硬编码绿灯
+        "redis": redis_client.ping(),
+        "mqtt": mqtt_client.is_connected(),
+        "iot_mode": "lab-prototype",  # 实验室真实传感器组网（ESP32×3）+ 港区规模虚拟
+    }

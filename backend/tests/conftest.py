@@ -86,12 +86,12 @@ def make_user(client):
     """注册并登录一个用户，返回 id / headers。"""
     def _make(role: str = "demander", password: str = "Passw0rd123"):
         username = _next_name(role[:3])
-        r = client.post("/api/auth/register", json={
+        r = client.post("/api/v1/auth/register", json={
             "username": username, "password": password, "role": role,
             "company_name": f"{username}公司", "contact": "13800000000",
         })
         assert r.status_code == 201, r.text
-        token = client.post("/api/auth/login", json={
+        token = client.post("/api/v1/auth/login", json={
             "username": username, "password": password,
         }).json()["access_token"]
         return {
@@ -121,7 +121,7 @@ def make_resource(client):
             "description": "测试资源",
         }
         payload.update(overrides)
-        r = client.post("/api/resources", headers=owner["headers"], json=payload)
+        r = client.post("/api/v1/resources", headers=owner["headers"], json=payload)
         assert r.status_code == 201, r.text
         res = r.json()
         if status and status != res["status"]:
@@ -129,6 +129,6 @@ def make_resource(client):
                 conn.execute(
                     update(Resource).where(Resource.id == res["id"]).values(status=status)
                 )
-            res = client.get(f"/api/resources/{res['id']}").json()
+            res = client.get(f"/api/v1/resources/{res['id']}").json()
         return res
     return _make

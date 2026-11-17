@@ -30,4 +30,8 @@ class OrderOut(BaseModel):
     commission_rate: Decimal
     commission: Decimal | None = None
     status: str
+    payment_status: str = "unpaid"
+    cancel_reason: str | None = None
+    version: int = 0
     created_at: datetime
+    updated_at: datetime | None = None

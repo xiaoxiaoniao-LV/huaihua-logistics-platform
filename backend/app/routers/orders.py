@@ -1,23 +1,24 @@
-"""订单：创建预约（含时段冲突检查）、查询、状态流转（含佣金结算）。"""
+"""订单：创建预约（行锁 + 幂等 + outbox）、查询、状态机流转（CAS）。"""
 import logging
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from .. import idempotency
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..models import Order, Resource, User
 from ..schemas.order import OrderCreate, OrderOut
+from ..services import order_state
+from ..services.outbox import emit
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/orders", tags=["orders"])
-
-# 资源未终结订单的状态（需要参与冲突检查）
-_ACTIVE_STATUS = {"pending", "confirmed", "ongoing"}
+router = APIRouter(prefix="/api/v1/orders", tags=["orders"])
 
 
 def _check_resource_window(resource: Resource, start_time, end_time):
@@ -32,10 +33,9 @@ def _check_time_overlap(db: Session, resource_id: int, start_time, end_time, exc
     """同资源未终结订单的时段重叠检测。重叠条件：A.start < B.end AND A.end > B.start。"""
     query = db.query(Order).filter(
         Order.resource_id == resource_id,
-        Order.status.in_(_ACTIVE_STATUS),
+        Order.status.in_(order_state.ACTIVE_STATUSES),
         Order.start_time.isnot(None),
         Order.end_time.isnot(None),
-        # 重叠判定：新订单起点 < 已有订单终点 AND 新订单终点 > 已有订单起点
         end_time > Order.start_time,
         start_time < Order.end_time,
     )
@@ -49,65 +49,99 @@ def _check_time_overlap(db: Session, resource_id: int, start_time, end_time, exc
         )
 
 
-@router.post("", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
-def create_order(
-    data: OrderCreate,
-    current: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    resource = db.get(Resource, data.resource_id)
-    if resource is None:
-        raise HTTPException(404, "资源不存在")
-    if resource.status != "available":
-        raise HTTPException(400, f"资源当前不可预约（状态：{resource.status}）")
-
-    # 1) 资源可用窗口检查
-    _check_resource_window(resource, data.start_time, data.end_time)
-
-    # 2) 同资源未终结订单时段重叠检查
-    _check_time_overlap(db, resource.id, data.start_time, data.end_time)
-
-    # 3) 价格计算：按天（向上取整确保整天计费）
-    days = max(1, (data.end_time - data.start_time).total_seconds() / 86400)
-    price_per_day = float(resource.price or 0)
-    total = Decimal(str(round(price_per_day * days, 2)))
-
-    # 4) 佣金率在下单时锁定（避免后续改费率影响老订单对账）
-    commission_rate = Decimal(str(round(settings.commission_rate, 4)))
-
-    order = Order(
-        resource_id=resource.id,
-        supplier_id=resource.user_id,
-        demander_id=current.id,
-        start_time=data.start_time,
-        end_time=data.end_time,
-        total_price=total,
-        commission_rate=commission_rate,
-        commission=None,  # finished 时结算
-        status="pending",
-    )
-    db.add(order)
-    # 锁资源（简化策略：有已终结订单时保持 available，pending 视为预占）
-    resource.status = "booked"
-    db.commit()
-    db.refresh(order)
-
-    # 5) Redis 缓存失效（资源列表、单资源详情）
+def _invalidate_resource(resource_id: int) -> None:
     try:
         from .. import redis_client as rc
-        rc.delete(f"resources:{resource.id}")
+        rc.delete(f"resources:{resource_id}")
     except Exception:
         pass
 
-    # 6) WebSocket 推送
-    try:
-        from .. import ws_broadcast
-        ws_broadcast.publish({"type": "order_created", "order_id": order.id, "resource_id": resource.id})
-        ws_broadcast.publish({"type": "resource_updated", "resource_id": resource.id, "status": resource.status})
-    except Exception:
-        logger.warning("[orders] WS 推送失败", exc_info=True)
 
-    return order
+@router.post("", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
+def create_order(
+    data: OrderCreate,
+    x_idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    scope = "order:create"
+    if x_idempotency_key:
+        cached = idempotency.begin(db, scope, x_idempotency_key, current.id)
+        if cached is not None:
+            return JSONResponse(content=cached["body"], status_code=cached["code"])
+
+    try:
+        # 行锁资源，避免并发下单同时通过冲突检查
+        resource = (
+            db.query(Resource)
+            .filter(Resource.id == data.resource_id)
+            .with_for_update()
+            .first()
+        )
+        if resource is None:
+            raise HTTPException(404, "资源不存在")
+        if resource.status != "available":
+            raise HTTPException(400, f"资源当前不可预约（状态：{resource.status}）")
+
+        _check_resource_window(resource, data.start_time, data.end_time)
+        _check_time_overlap(db, resource.id, data.start_time, data.end_time)
+
+        # 按天计费，向上取整由 max(1, …) 保证至少一天
+        days = max(1, (data.end_time - data.start_time).total_seconds() / 86400)
+        price_per_day = float(resource.price or 0)
+        total = Decimal(str(round(price_per_day * days, 2)))
+        # 佣金率在下单时锁定，避免后续改费率影响老订单对账
+        commission_rate = Decimal(str(round(settings.commission_rate, 4)))
+
+        order = Order(
+            resource_id=resource.id,
+            supplier_id=resource.user_id,
+            demander_id=current.id,
+            start_time=data.start_time,
+            end_time=data.end_time,
+            total_price=total,
+            commission_rate=commission_rate,
+            commission=None,
+            status="pending",
+            payment_status="unpaid",
+        )
+        db.add(order)
+        resource.status = "booked"
+        db.flush()  # 取 order.id 供事件使用，事务仍未提交
+
+        emit(
+            db,
+            "order",
+            order.id,
+            "order_created",
+            {
+                "order_id": order.id,
+                "resource_id": resource.id,
+                "total_price": float(total),
+            },
+        )
+        emit(
+            db,
+            "resource",
+            resource.id,
+            "resource_updated",
+            {"resource_id": resource.id, "status": resource.status},
+        )
+        db.commit()
+        db.refresh(order)
+    except Exception:
+        if x_idempotency_key:
+            idempotency.release(db, scope, x_idempotency_key)
+        else:
+            db.rollback()
+        raise
+
+    _invalidate_resource(order.resource_id)
+
+    body = OrderOut.model_validate(order).model_dump(mode="json")
+    if x_idempotency_key:
+        idempotency.remember(db, scope, x_idempotency_key, 201, body)
+    return body
 
 
 @router.get("", response_model=list[OrderOut])
@@ -125,7 +159,6 @@ def list_orders(
     elif mine == "supplier":
         q = q.filter(Order.supplier_id == current.id)
     elif current.role != "admin":
-        # 非 admin 默认只看自己的
         q = q.filter(or_(Order.demander_id == current.id, Order.supplier_id == current.id))
     response.headers["X-Total-Count"] = str(q.count())
     return (
@@ -140,70 +173,30 @@ def list_orders(
 def update_order_status(
     order_id: int,
     new_status: str = Query(...),
+    reason: str | None = Query(None),
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    order = db.get(Order, order_id)
+    order = (
+        db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    )
     if order is None:
         raise HTTPException(404, "订单不存在")
-    if current.role != "admin" and order.demander_id != current.id and order.supplier_id != current.id:
-        raise HTTPException(403, "无权操作此订单")
 
-    allowed = {"pending", "confirmed", "ongoing", "finished", "cancelled"}
-    if new_status not in allowed:
-        raise HTTPException(400, f"无效状态，允许值：{allowed}")
+    # 先校验状态是否合法/可流转（400），再校验操作者权限（403）
+    order_state.validate_transition(order.status, new_status)
+    order_state.check_actor(order, current, new_status)
+    order_state.transition(db, order, new_status, current, reason=reason)
 
-    old_status = order.status
-    order.status = new_status
-
-    # --- 状态变迁副作用 ---
-    # 取消/终结：释放资源
-    release_statuses = {"cancelled", "finished"}
-    if new_status in release_statuses and old_status not in release_statuses:
-        res = db.get(Resource, order.resource_id)
-        if res and res.status == "booked":
-            # 只有没有其他未终结订单占用该资源时才释放回 available
-            other_active = (
-                db.query(Order)
-                .filter(
-                    Order.resource_id == order.resource_id,
-                    Order.status.in_(_ACTIVE_STATUS - {"finished", "cancelled"}),
-                    Order.id != order.id,
-                )
-                .count()
-            )
-            if other_active == 0:
-                res.status = "available"
-
-    # finished：结算佣金（按订单创建时锁定的费率）
-    if new_status == "finished" and order.commission is None:
-        order.commission = Decimal(
-            str(round(float(order.total_price or 0) * float(order.commission_rate or 0), 2))
-        )
-
-    # cancelled：清空 commission（如果之前有写入）
-    if new_status == "cancelled":
-        order.commission = None
-
+    emit(
+        db,
+        "resource",
+        order.resource_id,
+        "resource_updated",
+        {"resource_id": order.resource_id},
+    )
     db.commit()
     db.refresh(order)
 
-    # Redis 缓存失效
-    try:
-        from .. import redis_client as rc
-        rc.delete(f"resources:{order.resource_id}")
-    except Exception:
-        pass
-
-    # WebSocket 推送
-    try:
-        from .. import ws_broadcast
-        ws_broadcast.publish({"type": "order_status_changed", "order_id": order.id, "new_status": new_status})
-        # 资源状态可能随订单变迁（booked ↔ available），通知前端刷新冷链箱颜色
-        res = db.get(Resource, order.resource_id)
-        if res:
-            ws_broadcast.publish({"type": "resource_updated", "resource_id": res.id, "status": res.status})
-    except Exception:
-        logger.warning("[orders] WS 推送失败", exc_info=True)
-
+    _invalidate_resource(order.resource_id)
     return order

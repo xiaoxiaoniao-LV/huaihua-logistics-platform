@@ -7,16 +7,46 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import redis.asyncio as aioredis
 import redis as sync_redis
+import redis.exceptions as redis_exc
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
 
 KEY_PREFIX = "hlg:"  # huaihua-logistics-platform 缩写，避免跨项目污染
+
+# --- 熔断：Redis 不可用时短期跳过，避免每个请求都等连接超时 ---
+_BREAKER_SECONDS = 30.0
+_breaker_open_until: float = 0.0
+
+# 连接/读写超时压到亚秒级：本机 Redis 未启动时端口可能被防火墙丢包，
+# 不设超时会阻塞 8s 以上，直接把业务接口拖到前端超时。
+_SOCKET_TIMEOUT = 0.5
+
+
+def _available() -> bool:
+    return time.monotonic() >= _breaker_open_until
+
+
+def _fail(op: str, key: str, exc: Exception) -> None:
+    global _breaker_open_until
+    if isinstance(
+        exc,
+        (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError),
+    ):
+        _breaker_open_until = time.monotonic() + _BREAKER_SECONDS
+        logger.warning(
+            "[redis] %s 失败 key=%s，%d 秒内降级直算：%s",
+            op, key, int(_BREAKER_SECONDS), exc,
+        )
+    else:
+        logger.warning("[redis] %s 失败 key=%s: %s", op, key, exc)
+
 
 # --- 连接池（全局单例，懒加载） ---
 _sync_pool: sync_redis.ConnectionPool | None = None
@@ -31,6 +61,8 @@ def get_sync_pool() -> sync_redis.ConnectionPool:
             settings.redis_url,
             max_connections=32,
             decode_responses=True,
+            socket_connect_timeout=_SOCKET_TIMEOUT,
+            socket_timeout=_SOCKET_TIMEOUT,
         )
         logger.info("[redis] 同步连接池已初始化，url=%s", settings.redis_url)
     return _sync_pool
@@ -48,6 +80,8 @@ async def get_async_pool() -> aioredis.ConnectionPool:
             settings.redis_url,
             max_connections=32,
             decode_responses=True,
+            socket_connect_timeout=_SOCKET_TIMEOUT,
+            socket_timeout=_SOCKET_TIMEOUT,
         )
         logger.info("[redis] 异步连接池已初始化，url=%s", settings.redis_url)
     return _async_pool
@@ -58,6 +92,7 @@ async def get_async() -> aioredis.Redis:
     return aioredis.Redis(connection_pool=pool)
 
 
+
 # --- 缓存工具函数 ---
 def k(key: str) -> str:
     """统一加前缀。"""
@@ -66,27 +101,33 @@ def k(key: str) -> str:
 
 def set_json(key: str, value: Any, ttl: int = 60) -> None:
     """写 JSON 缓存，ttl 秒。"""
+    if not _available():
+        return
     try:
         get_sync().set(k(key), json.dumps(value, default=str), ex=ttl)
     except Exception as e:
-        logger.warning("[redis] set_json 失败 key=%s: %s", key, e)
+        _fail("set_json", key, e)
 
 
 def get_json(key: str) -> Any:
     """读 JSON 缓存，返回 None 表示 miss。"""
+    if not _available():
+        return None
     try:
         raw = get_sync().get(k(key))
         return json.loads(raw) if raw is not None else None
     except Exception as e:
-        logger.warning("[redis] get_json 失败 key=%s: %s", key, e)
+        _fail("get_json", key, e)
         return None
 
 
 def delete(key: str) -> None:
+    if not _available():
+        return
     try:
         get_sync().delete(k(key))
     except Exception as e:
-        logger.warning("[redis] delete 失败 key=%s: %s", key, e)
+        _fail("delete", key, e)
 
 
 def delete_by_pattern(pattern: str, batch_size: int = 100) -> int:
@@ -94,6 +135,8 @@ def delete_by_pattern(pattern: str, batch_size: int = 100) -> int:
 
     KEYS 是 O(N) 且会阻塞单线程 Redis；SCAN 每次只扫一小批，可增量迭代。
     """
+    if not _available():
+        return 0
     try:
         r = get_sync()
         full_pattern = k(pattern)
@@ -108,12 +151,14 @@ def delete_by_pattern(pattern: str, batch_size: int = 100) -> int:
             deleted += r.delete(*batch)
         return deleted
     except Exception as e:
-        logger.warning("[redis] delete_by_pattern 失败 pattern=%s: %s", pattern, e)
+        _fail("delete_by_pattern", pattern, e)
         return 0
 
 
 def ping() -> bool:
     """健康检查用。"""
+    if not _available():
+        return False
     try:
         return bool(get_sync().ping())
     except Exception:
@@ -125,6 +170,8 @@ def incr_ttl(key: str, ttl: int = 60) -> int | None:
 
     用于登录失败限流等需要原子计数的场景。首次调用会把 key 置 1 并设 TTL。
     """
+    if not _available():
+        return None
     try:
         r = get_sync()
         full = k(key)
@@ -134,17 +181,19 @@ def incr_ttl(key: str, ttl: int = 60) -> int | None:
         val = pipe.execute()[0]
         return int(val)
     except Exception as e:
-        logger.warning("[redis] incr_ttl 失败 key=%s: %s", key, e)
+        _fail("incr_ttl", key, e)
         return None
 
 
 def get_int(key: str) -> int | None:
     """读取整数值，key 不存在返回 0，Redis 不可用返回 None。"""
+    if not _available():
+        return None
     try:
         raw = get_sync().get(k(key))
         return int(raw) if raw is not None else 0
     except Exception as e:
-        logger.warning("[redis] get_int 失败 key=%s: %s", key, e)
+        _fail("get_int", key, e)
         return None
 
 

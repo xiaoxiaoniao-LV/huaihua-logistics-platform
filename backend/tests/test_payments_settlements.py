@@ -1,0 +1,103 @@
+"""支付沙箱旁路、结算单与对账。"""
+from datetime import datetime, timedelta
+
+from app.database import SessionLocal
+from app.models import PaymentEvent
+
+
+def _payload(res_id: int, price_days: int = 1):
+    return {
+        "resource_id": res_id,
+        "start_time": (datetime.now() + timedelta(hours=1)).isoformat(),
+        "end_time": (datetime.now() + timedelta(hours=1, days=price_days)).isoformat(),
+    }
+
+
+def _session():
+    return SessionLocal()
+
+
+def _make_order(client, make_user, make_resource, price=None):
+    sup = make_user(role="supplier")
+    dem = make_user()
+    res = make_resource(sup, status="available", **({"price": price} if price else {}))
+    order = client.post("/api/v1/orders", headers=dem["headers"],
+                        json=_payload(res["id"])).json()
+    return sup, dem, res, order
+
+
+def test_payment_intent_and_mock_checkout(client, make_user, make_resource):
+    sup, dem, res, order = _make_order(client, make_user, make_resource, price=100)
+
+    r = client.post(f"/api/v1/payments/{order['id']}/intent", headers=dem["headers"])
+    assert r.status_code == 200
+    data = r.json()
+    assert data["provider"] == "alipay_sandbox"
+    assert data["trade_no"].startswith("SBX")
+
+    r = client.get("/api/v1/payments/mock-checkout",
+                   params={"order_id": order["id"], "trade_no": data["trade_no"]})
+    assert r.status_code == 200
+    assert r.json()["payment_status"] == "paid"
+
+    detail = client.get(f"/api/v1/orders?mine=demander", headers=dem["headers"]).json()
+    assert detail[0]["payment_status"] == "paid"
+
+
+def test_alipay_notify_is_idempotent(client, make_user, make_resource):
+    sup, dem, res, order = _make_order(client, make_user, make_resource, price=100)
+    notify = {
+        "order_id": order["id"],
+        "trade_no": f"SBX{order['id']}-1700000000000",
+        "trade_status": "TRADE_SUCCESS",
+        "total_amount": "100.00",
+    }
+    r1 = client.post("/api/v1/payments/notify/alipay", json=notify)
+    r2 = client.post("/api/v1/payments/notify/alipay", json=notify)
+    assert r1.json()["code"] == "10000"
+    # 重复通知不重复记账
+    assert r2.json()["code"] == "40004"
+
+    db = _session()
+    try:
+        assert db.query(PaymentEvent).filter(PaymentEvent.order_id == order["id"]).count() == 1
+    finally:
+        db.close()
+
+
+def test_settlement_lifecycle_and_reconciliation(client, make_user, make_resource):
+    sup, dem, res, order = _make_order(client, make_user, make_resource, price=100)
+    admin = make_user(role="admin")
+
+    for st in ("confirmed", "ongoing", "finished"):
+        client.put(f"/api/v1/orders/{order['id']}/status", headers=sup["headers"],
+                   params={"new_status": st})
+
+    items = client.get("/api/v1/settlements", headers=sup["headers"]).json()
+    assert len(items) == 1
+    sid = items[0]["id"]
+    assert items[0]["status"] == "pending"
+
+    # 需求方看不到与自己无关的结算单
+    assert client.get("/api/v1/settlements", headers=dem["headers"]).json() == []
+
+    # 非管理员不能改结算状态
+    assert client.put(f"/api/v1/settlements/{sid}/status", headers=sup["headers"],
+                      params={"new_status": "confirmed"}).status_code == 403
+
+    r = client.put(f"/api/v1/settlements/{sid}/status", headers=admin["headers"],
+                   params={"new_status": "confirmed"})
+    assert r.status_code == 200
+    r = client.put(f"/api/v1/settlements/{sid}/status", headers=admin["headers"],
+                   params={"new_status": "paid"})
+    assert r.status_code == 200
+    assert r.json()["settled_at"] is not None
+
+    # 已打款不可回退
+    assert client.put(f"/api/v1/settlements/{sid}/status", headers=admin["headers"],
+                      params={"new_status": "void"}).status_code == 400
+
+    rec = client.get("/api/v1/settlements/reconciliation", headers=admin["headers"])
+    assert rec.status_code == 200
+    assert rec.json()["orders"] >= 1
+    assert rec.json()["gmv"] >= 100

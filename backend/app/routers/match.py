@@ -11,7 +11,7 @@ from ..services.matching import recommend
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/match", tags=["match"])
+router = APIRouter(prefix="/api/v1/match", tags=["match"])
 
 # 撮合结果随价格变动，TTL 30s
 _TTL = 30

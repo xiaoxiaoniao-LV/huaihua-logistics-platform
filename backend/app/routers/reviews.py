@@ -16,7 +16,7 @@ from ..schemas.review import ReviewCreate, ReviewOut, UserRatingSummary
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/reviews", tags=["reviews"])
+router = APIRouter(prefix="/api/v1/reviews", tags=["reviews"])
 
 _BASE_CREDIT = 60.0
 _CREDIT_RANGE = 40.0

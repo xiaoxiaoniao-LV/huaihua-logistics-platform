@@ -11,7 +11,14 @@ class IoTDevice(Base):
     resource_id = Column(BigInteger, nullable=False, index=True)
     device_code = Column(String(50), unique=True, nullable=False)
     device_type = Column(String(30))
-    status = Column(String(20), default="offline")  # online / offline
+    name = Column(String(100), nullable=True)
+    # 所属空间（spaces.id），用于孪生与大屏按空间聚合
+    space_id = Column(BigInteger, nullable=True, index=True)
+    # online / offline / degraded / alarm / maintenance / unknown
+    status = Column(String(20), default="offline")
+    # 数据质量：good / stale / bad，与 status 正交，避免「在线但数据过期」
+    quality = Column(String(10), nullable=False, default="unknown")
+    last_seen_at = Column(DateTime, nullable=True)
     firmware_version = Column(String(20), nullable=False, default="1.0.0")
 
 

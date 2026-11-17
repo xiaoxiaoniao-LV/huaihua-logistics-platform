@@ -9,13 +9,17 @@ from ..audit import log_audit
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, require_admin
-from ..models import Alert, AlertRule, IoTDevice, IoTData, Resource, User
+from ..models import (
+    Alert, AlertRule, DeviceEvent, DevicePoint, IoTDevice, IoTData, Resource, Telemetry, User,
+)
 from ..schemas.alert_rule import AlertRuleOut, AlertRuleUpdate
 from ..schemas.iot import IoTDataReport
+from ..schemas.telemetry import DevicePointCreate, TelemetryBatch
+from ..services import telemetry as telemetry_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/iot", tags=["iot"])
+router = APIRouter(prefix="/api/v1/iot", tags=["iot"])
 
 _TTL_LATEST = 5  # IoT 最新值，5s 过期
 GLOBAL_RULE_ID = 0  # alert_rules.resource_id = 0 表示全局默认规则
@@ -151,6 +155,10 @@ def report_data(payload: IoTDataReport, db: Session = Depends(get_db)):
         latitude=payload.latitude,
     )
     db.add(row)
+    dev.last_seen_at = now
+    dev.quality = "good"
+    if dev.status in (None, "", "unknown", "offline"):
+        dev.status = "online"
     if dev.resource_id:
         _check_alerts(db, dev, payload.model_dump())
     db.commit()
@@ -219,6 +227,160 @@ def query_data(
             "recorded_at": r.recorded_at.isoformat(),
         })
     return {"count": len(rows), "data": out}
+
+
+# ---------------- 遥测接入（窄表 / 点位字典） ----------------
+
+def _get_device_or_404(db: Session, device_code: str) -> IoTDevice:
+    dev = db.query(IoTDevice).filter(IoTDevice.device_code == device_code).first()
+    if dev is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "设备不存在")
+    return dev
+
+
+@router.post(
+    "/telemetry",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_verify_device_token)],
+)
+def report_telemetry(payload: TelemetryBatch, db: Session = Depends(get_db)):
+    """设备批量上报遥测。
+
+    按点位字典校验键名，按 (device, point, ts) 去重，可安全重放补传数据。
+    数值越限需连续三次同向越限才告警，恢复正常后自动关闭。
+    """
+    try:
+        result = telemetry_service.ingest_batch(db, payload.items)
+        db.commit()
+    except (
+        telemetry_service.UnknownPointsError,
+        telemetry_service.InvalidPointValueError,
+    ) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    telemetry_service.publish_ingest(result)
+    return result
+
+
+@router.get("/devices/{device_code}/state")
+def device_state(device_code: str, db: Session = Depends(get_db)):
+    """设备面板读模型：可用性、数据新鲜度与全部点位最新值。"""
+    return telemetry_service.device_snapshot(db, _get_device_or_404(db, device_code))
+
+
+@router.get("/devices/{device_code}/points")
+def list_device_points(device_code: str, db: Session = Depends(get_db)):
+    """点位字典：该设备已注册的全部测点及其阈值。"""
+    dev = _get_device_or_404(db, device_code)
+    rows = (
+        db.query(DevicePoint)
+        .filter(DevicePoint.device_id == dev.id)
+        .order_by(DevicePoint.sort, DevicePoint.id)
+        .all()
+    )
+    return {
+        "device_code": dev.device_code,
+        "count": len(rows),
+        "points": [
+            {
+                "id": p.id, "point_key": p.point_key, "name": p.name, "unit": p.unit,
+                "data_type": p.data_type, "precision": p.precision,
+                "min_value": p.min_value, "max_value": p.max_value,
+                "writable": p.writable, "sort": p.sort,
+            }
+            for p in rows
+        ],
+    }
+
+
+@router.post("/devices/{device_code}/points", status_code=status.HTTP_201_CREATED)
+def create_device_point(
+    device_code: str,
+    data: DevicePointCreate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """注册内置字典之外的自定义点位（如光照、门锁、摄像头心跳）。"""
+    dev = _get_device_or_404(db, device_code)
+    exists = (
+        db.query(DevicePoint)
+        .filter(DevicePoint.device_id == dev.id, DevicePoint.point_key == data.point_key)
+        .first()
+    )
+    if exists is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "点位已存在")
+    point = DevicePoint(device_id=dev.id, **data.model_dump())
+    db.add(point)
+    db.commit()
+    db.refresh(point)
+    logger.info("[iot] 设备 %s 注册点位 %s（操作人 %s）", dev.device_code, point.point_key, admin.username)
+    return {
+        "id": point.id, "device_code": dev.device_code, "point_key": point.point_key,
+        "name": point.name, "unit": point.unit, "data_type": point.data_type,
+        "precision": point.precision, "min_value": point.min_value,
+        "max_value": point.max_value, "writable": point.writable, "sort": point.sort,
+    }
+
+
+@router.get("/devices/{device_code}/series")
+def device_series(
+    device_code: str,
+    point_key: str = Query(..., min_length=1, max_length=50),
+    limit: int = Query(120, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """单点位历史序列（时间正序），用于趋势图与失温回溯。"""
+    dev = _get_device_or_404(db, device_code)
+    point = (
+        db.query(DevicePoint)
+        .filter(DevicePoint.device_id == dev.id, DevicePoint.point_key == point_key)
+        .first()
+    )
+    if point is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "点位不存在")
+    rows = telemetry_service.series(db, dev, point_key, limit=limit)
+    for row in rows:
+        if point.data_type == "bool":
+            row["value"] = bool(row["value_num"]) if row["value_num"] is not None else None
+        elif point.data_type == "text":
+            row["value"] = row["value_text"]
+        elif row["value_num"] is not None:
+            row["value"] = round(row["value_num"], point.precision)
+    return {
+        "device_code": device_code,
+        "point_key": point_key,
+        "unit": point.unit,
+        "count": len(rows),
+        "data": rows,
+    }
+
+
+@router.get("/devices/{device_code}/events")
+def device_events(
+    device_code: str,
+    limit: int = Query(50, ge=1, le=500),
+    unresolved: bool = Query(False, description="只看未恢复事件"),
+    db: Session = Depends(get_db),
+):
+    """设备事件流：越限告警、门磁变位等，供孪生面板与失温溯源。"""
+    dev = _get_device_or_404(db, device_code)
+    query = db.query(DeviceEvent).filter(DeviceEvent.device_id == dev.id)
+    if unresolved:
+        query = query.filter(DeviceEvent.resolved_at.is_(None))
+    rows = query.order_by(DeviceEvent.ts.desc()).limit(limit).all()
+    return {
+        "device_code": dev.device_code,
+        "count": len(rows),
+        "events": [
+            {
+                "id": e.id, "event_type": e.event_type, "severity": e.severity,
+                "message": e.message, "payload": e.payload,
+                "ts": e.ts.isoformat() if e.ts else None,
+                "resolved_at": e.resolved_at.isoformat() if e.resolved_at else None,
+            }
+            for e in rows
+        ],
+    }
 
 
 @router.get("/alerts")

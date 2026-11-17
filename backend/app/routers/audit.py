@@ -7,7 +7,7 @@ from ..deps import require_admin
 from ..models import AuditLog, User
 from ..schemas.audit import AuditLogOut
 
-router = APIRouter(prefix="/api/audit-logs", tags=["audit"])
+router = APIRouter(prefix="/api/v1/audit-logs", tags=["audit"])
 
 
 @router.get("", response_model=list[AuditLogOut])

@@ -19,7 +19,7 @@ from ..schemas.user import PasswordChange, UserCreate, UserOut
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 _LOGIN_FAIL_KEY = "login:fail:{username}"
 
@@ -88,8 +88,12 @@ def login(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     _clear_login_failure(data.username)
     log_audit(db, user, "login", detail="登录成功", ip=_client_ip(request))
 
-    access = security.create_access_token(str(user.id), {"role": user.role})
-    refresh = security.create_refresh_token(str(user.id), {"role": user.role})
+    access = security.create_access_token(
+        str(user.id), {"role": user.role}, client=data.client
+    )
+    refresh = security.create_refresh_token(
+        str(user.id), {"role": user.role}, client=data.client
+    )
     return TokenPair(access_token=access, refresh_token=refresh)
 
 
@@ -109,8 +113,14 @@ def refresh_token(data: RefreshRequest, db: Session = Depends(get_db)):
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在或已被禁用")
 
-    access = security.create_access_token(str(user.id), {"role": user.role})
-    refresh = security.create_refresh_token(str(user.id), {"role": user.role})
+    # 沿用原令牌的终端声明，避免刷新后丢失 client
+    client = payload.get("client", "admin")
+    access = security.create_access_token(
+        str(user.id), {"role": user.role}, client=client
+    )
+    refresh = security.create_refresh_token(
+        str(user.id), {"role": user.role}, client=client
+    )
     return TokenPair(access_token=access, refresh_token=refresh)
 
 

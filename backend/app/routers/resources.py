@@ -12,7 +12,7 @@ from ..schemas.resource import ResourceCreate, ResourceOut, ResourceReview, Reso
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/resources", tags=["resources"])
+router = APIRouter(prefix="/api/v1/resources", tags=["resources"])
 
 # 缓存 TTL（秒）——资源列表变动频繁，用短 TTL
 _TTL_LIST = 15

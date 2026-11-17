@@ -21,10 +21,10 @@ from sqlalchemy.orm import Session
 from ..models import Order, Resource, Review, User
 
 _TYPE_CN = {
-    "warehouse": "仓储",
+    "warehouse": "冷库",
     "cold_box": "冷链箱位",
-    "vehicle": "运力",
-    "equipment": "设备",
+    "vehicle": "冷藏运输",
+    "equipment": "温控设备",
 }
 
 _HOT_WINDOW_DAYS = 30

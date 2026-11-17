@@ -123,6 +123,14 @@ def start_mqtt(host: str = "localhost", port: int = 1883):
     _client = cli
 
 
+def is_connected() -> bool:
+    """健康检查用：MQTT 是否已连上 broker。"""
+    try:
+        return _client is not None and bool(_client.is_connected())
+    except Exception:
+        return False
+
+
 def publish(topic: str, payload: dict):
     """向 MQTT 发消息（给模拟器调用）。"""
     global _client

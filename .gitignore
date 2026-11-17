@@ -16,6 +16,7 @@ backend/.env.*
 
 # 日志与临时文件
 *.log
+*.zip
 .DS_Store
 
 # 编辑器本地配置

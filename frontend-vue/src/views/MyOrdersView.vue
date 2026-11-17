@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { listOrders, updateOrderStatus, type Order } from '@/api/orders'
+import { createPaymentIntent } from '@/api/payments'
 import { listResources, type Resource } from '@/api/resources'
 import { createReview, listOrderReviews, type Review } from '@/api/reviews'
 import { useAuthStore } from '@/stores/auth'
@@ -10,10 +11,19 @@ import { apiError } from '@/utils/error'
 const auth = useAuthStore()
 
 const statusLabels: Record<string, string> = {
-  pending: '待确认', confirmed: '已确认', ongoing: '进行中', finished: '已完成', cancelled: '已取消',
+  inquiry: '待确认', pending: '待确认', confirmed: '已确认', ongoing: '进行中',
+  finished: '已完成', settled: '已结算', rejected: '已驳回', cancelled: '已取消', expired: '已过期',
 }
 const statusTag: Record<string, string> = {
-  pending: 'tag-blue', confirmed: 'tag-green', ongoing: 'tag-green', finished: 'tag-green', cancelled: 'tag-red',
+  inquiry: 'tag-blue', pending: 'tag-blue', confirmed: 'tag-green', ongoing: 'tag-green',
+  finished: 'tag-green', settled: 'tag-green', rejected: 'tag-red', cancelled: 'tag-red', expired: 'tag-red',
+}
+
+const paymentLabels: Record<string, string> = {
+  unpaid: '未支付', paid: '已支付', refunding: '退款中', refunded: '已退款', waived: '免支付',
+}
+const paymentTag: Record<string, string> = {
+  unpaid: 'tag-orange', paid: 'tag-green', refunding: 'tag-orange', refunded: 'tag-red', waived: 'tag-blue',
 }
 
 const orders = ref<Order[]>([])
@@ -75,6 +85,35 @@ async function changeStatus(o: Order, status: string, confirmText?: string) {
     actionError.value = apiError(e, '操作失败')
   } finally {
     busyId.value = null
+  }
+}
+
+// ---------- 支付 ----------
+const payingId = ref<number | null>(null)
+
+function canPay(o: Order) {
+  if (o.payment_status === 'paid' || o.payment_status === 'waived') return false
+  if (['rejected', 'cancelled', 'expired'].includes(o.status)) return false
+  return isDemanderOf(o)
+}
+
+async function pay(o: Order) {
+  actionError.value = ''
+  payingId.value = o.id
+  try {
+    const { data } = await createPaymentIntent(o.id)
+    if (data.already_paid) {
+      await load()
+      return
+    }
+    if (data.pay_url) {
+      window.open(data.pay_url, '_blank', 'noopener')
+    }
+    await load()
+  } catch (e) {
+    actionError.value = apiError(e, '发起支付失败（支付通道可能未启用）')
+  } finally {
+    payingId.value = null
   }
 }
 
@@ -201,8 +240,13 @@ onMounted(async () => {
               <span class="tag" :class="statusTag[o.status] || 'tag-blue'">
                 {{ statusLabels[o.status] || o.status }}
               </span>
+              <div v-if="o.payment_status" style="margin-top: 4px">
+                <span class="tag" :class="paymentTag[o.payment_status] || 'tag-blue'" style="font-size: 11px">
+                  {{ paymentLabels[o.payment_status] || o.payment_status }}
+                </span>
+              </div>
             </td>
-            <td>
+            <td style="width: 300px">
               <template v-if="busyId === o.id">
                 <span class="muted" style="font-size: 12px">处理中…</span>
               </template>
@@ -234,6 +278,14 @@ onMounted(async () => {
                   @click="changeStatus(o, 'cancelled', '确认取消该订单？')"
                 >
                   取消
+                </button>
+                <button
+                  v-if="canPay(o)"
+                  class="btn btn-sm"
+                  :disabled="payingId === o.id"
+                  @click="pay(o)"
+                >
+                  {{ payingId === o.id ? '拉起收银台…' : '去支付' }}
                 </button>
                 <button
                   v-if="o.status === 'finished'"

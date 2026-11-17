@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   autoBindDevices, createDevice, createOtaJob, deleteDevice, importDevices, listDevices,
@@ -26,7 +26,12 @@ const filters: { key: typeof filter.value; label: string }[] = [
 ]
 
 const typeLabels: Record<string, string> = {
-  warehouse: '仓库', cold_box: '冷链箱', vehicle: '运力', equipment: '设备',
+  warehouse: '冷库', cold_box: '冷链箱位', vehicle: '冷藏运输', equipment: '温控设备',
+}
+const deviceTypeLabels: Record<string, string> = {
+  dht22: '温湿度传感器', temp_humidity: '温湿度传感器',
+  gps: 'GPS 定位', gps_temp: 'GPS + 温湿度',
+  esp32: 'ESP32 网关',
 }
 
 const list = computed(() =>
@@ -314,7 +319,7 @@ async function submitOta() {
         <tbody>
           <tr v-for="d in list" :key="d.id">
             <td class="mono">{{ d.device_code }}</td>
-            <td class="muted">{{ d.device_type || '-' }}</td>
+            <td class="muted">{{ (d.device_type && deviceTypeLabels[d.device_type]) || d.device_type || '-' }}</td>
             <td>
               <select
                 v-if="canManage(d)"

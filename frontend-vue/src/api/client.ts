@@ -25,7 +25,7 @@ function tryRefresh(): Promise<string> {
   if (!refreshPromise) {
     refreshPromise = axios
       .post(
-        `${BASE}/api/auth/refresh`,
+        `${BASE}/api/v1/auth/refresh`,
         { refresh_token: refreshToken },
         { timeout: 10000 },
       )

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   createResource, deleteResource, listResources, updateResource, type Resource,
@@ -6,11 +6,12 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import AppModal from '@/components/common/AppModal.vue'
 import { apiError } from '@/utils/error'
+import { fmtPrice } from '@/utils/format'
 
 const auth = useAuthStore()
 
 const typeLabels: Record<string, string> = {
-  warehouse: '仓库', cold_box: '冷链箱', vehicle: '运力', equipment: '设备',
+  warehouse: '冷库', cold_box: '冷链箱位', vehicle: '冷藏运输', equipment: '温控设备',
 }
 const statusLabels: Record<string, string> = {
   available: '已上架', booked: '已预约', pending: '待审核', offline: '已下架',
@@ -27,9 +28,14 @@ const mine = computed(() => items.value.filter((r) => r.user_id === auth.user?.i
 
 async function load() {
   loading.value = true
+  actionError.value = ''
   try {
     const { data } = await listResources({ page_size: 200 })
     items.value = data
+  } catch (e) {
+    // 失败时明确提示，避免误显示成“0 条资源”的空态
+    items.value = []
+    actionError.value = apiError(e, '资源列表加载失败，请检查后端服务后重试')
   } finally {
     loading.value = false
   }
@@ -46,7 +52,9 @@ const form = reactive({
   name: '',
   location: '',
   price: '',
-  price_unit: '元/天',
+  price_unit: '天',
+  available_start: '',
+  available_end: '',
   description: '',
 })
 
@@ -57,7 +65,9 @@ function openCreate() {
   form.name = ''
   form.location = ''
   form.price = ''
-  form.price_unit = '元/天'
+  form.price_unit = '天'
+  form.available_start = ''
+  form.available_end = ''
   form.description = ''
   showForm.value = true
 }
@@ -69,7 +79,10 @@ function openEdit(r: Resource) {
   form.name = r.name
   form.location = r.location || ''
   form.price = r.price != null ? String(r.price) : ''
-  form.price_unit = r.price_unit || '元/天'
+  form.price_unit = r.price_unit || '天'
+  // datetime-local 需要 yyyy-MM-ddTHH:mm，后端返回的是 ISO 串
+  form.available_start = r.available_start ? r.available_start.slice(0, 16) : ''
+  form.available_end = r.available_end ? r.available_end.slice(0, 16) : ''
   form.description = r.description || ''
   showForm.value = true
 }
@@ -88,6 +101,8 @@ async function submitForm() {
       location: form.location || null,
       price: form.price ? form.price : null,
       price_unit: form.price_unit || null,
+      available_start: form.available_start || null,
+      available_end: form.available_end || null,
       description: form.description || null,
     }
     if (editing.value) {
@@ -141,7 +156,7 @@ onMounted(async () => {
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
         {{ loading ? '刷新中…' : '刷新' }}
       </button>
-      <button class="btn btn-sm" @click="openCreate">发布资源</button>
+      <button class="btn btn-sm" @click="openCreate">新建资源</button>
     </div>
 
     <div v-if="actionError" class="error-text">{{ actionError }}</div>
@@ -164,7 +179,7 @@ onMounted(async () => {
             <td class="muted">{{ typeLabels[r.type] || r.type }}</td>
             <td class="muted">{{ r.location || '-' }}</td>
             <td class="mono" style="color: var(--accent-orange)">
-              {{ r.price != null ? `¥${r.price}/${r.price_unit || '天'}` : '-' }}
+              {{ fmtPrice(r.price, r.price_unit) }}
             </td>
             <td>
               <span class="tag" :class="statusTag[r.status] || 'tag-blue'">
@@ -180,8 +195,12 @@ onMounted(async () => {
               >
                 {{ r.status === 'available' ? '下架' : '上架' }}
               </button>
-              <span v-if="r.status === 'pending'" class="muted" style="font-size: 11px">
-                等待管理员审核
+              <span
+                v-if="r.status === 'pending'"
+                class="tag tag-blue"
+                title="提交后需管理员审核通过才会在资源市场上架"
+              >
+                待管理员审核
               </span>
               <button
                 v-if="r.status !== 'booked'"
@@ -194,14 +213,14 @@ onMounted(async () => {
           </tr>
           <tr v-if="!mine.length">
             <td colspan="6">
-              <div class="empty">{{ loading ? '加载中…' : '还没有发布资源，点击右上角「发布资源」' }}</div>
+              <div class="empty">{{ loading ? '加载中…' : '还没有资源，点击右上角「新建资源」' }}</div>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <AppModal v-if="showForm" :title="editing ? '编辑资源' : '发布资源'" @close="showForm = false">
+    <AppModal v-if="showForm" :title="editing ? '编辑资源' : '新建资源（提交审核）'" @close="showForm = false">
       <div class="field-row">
         <div class="field">
           <label class="field-label">资源类型</label>
@@ -227,7 +246,18 @@ onMounted(async () => {
         </div>
         <div class="field">
           <label class="field-label">计价单位</label>
-          <input v-model="form.price_unit" class="input" placeholder="如：元/天" />
+          <input v-model="form.price_unit" class="input" placeholder="如：天 / 小时" />
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">可用开始（选填）</label>
+          <input v-model="form.available_start" class="input" type="datetime-local" />
+        </div>
+        <div class="field">
+          <label class="field-label">可用结束（选填）</label>
+          <input v-model="form.available_end" class="input" type="datetime-local" />
         </div>
       </div>
 

@@ -31,13 +31,13 @@ export interface ResourceStat {
 }
 
 export function getStatsOverview() {
-  return http.get<StatsOverview>('/api/stats/overview')
+  return http.get<StatsOverview>('/api/v1/stats/overview')
 }
 
 export function getStatsTrend(days = 7) {
-  return http.get<{ days: number; items: TrendPoint[] }>('/api/stats/trend', { params: { days } })
+  return http.get<{ days: number; items: TrendPoint[] }>('/api/v1/stats/trend', { params: { days } })
 }
 
 export function getStatsResources() {
-  return http.get<{ items: ResourceStat[] }>('/api/stats/resources')
+  return http.get<{ items: ResourceStat[] }>('/api/v1/stats/resources')
 }

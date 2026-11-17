@@ -128,12 +128,13 @@ defineExpose({ handleResourcesChange })
   bottom: 12px;
   left: 16px;
   padding: 8px 14px;
-  background: rgba(10, 26, 54, 0.8);
+  background: var(--bg-card);
   border: 1px solid var(--border-glow);
-  border-radius: 6px;
-  font-size: 11px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
+  backdrop-filter: blur(8px);
 }
-.hint-title { font-weight: 600; color: var(--accent-cyan); font-size: 12px; margin-bottom: 2px; }
-.hint-sub { font-size: 10px; color: var(--text-muted); }
+.hint-title { font-weight: 600; color: var(--accent-cyan); font-size: var(--fs-sm); margin-bottom: 2px; }
+.hint-sub { font-size: var(--fs-xs); color: var(--text-muted); }
 </style>

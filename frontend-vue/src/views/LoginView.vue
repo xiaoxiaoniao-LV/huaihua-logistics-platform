@@ -52,7 +52,7 @@ async function submit() {
   submitting.value = true
   try {
     if (mode.value === 'login') {
-      await auth.login(form.username.trim(), form.password)
+      await auth.login(form.username.trim(), form.password, 'admin')
     } else {
       await auth.register({
         username: form.username.trim(),
@@ -62,7 +62,7 @@ async function submit() {
         contact: form.contact || undefined,
       })
     }
-    const redirect = (route.query.redirect as string) || '/manage/resources'
+    const redirect = (route.query.redirect as string) || '/workbench'
     router.replace(redirect)
   } catch (e) {
     error.value = apiError(e, mode.value === 'login' ? '登录失败' : '注册失败')
@@ -77,7 +77,7 @@ async function submit() {
     <div class="login-card">
       <div class="brand">
         <div class="brand-title">怀化国际陆港</div>
-        <div class="brand-sub">物流资源共享与智能撮合平台</div>
+        <div class="brand-sub">冷链资源智能撮合平台（虚拟构建）</div>
       </div>
 
       <div class="tabs">
@@ -137,7 +137,7 @@ async function submit() {
       </form>
 
       <div class="back">
-        <RouterLink to="/" class="link">← 返回数字孪生大屏</RouterLink>
+        <a href="./screen.html" class="link">← 返回数字孪生大屏</a>
       </div>
     </div>
   </div>

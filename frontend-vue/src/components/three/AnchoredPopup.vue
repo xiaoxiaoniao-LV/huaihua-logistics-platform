@@ -2,6 +2,7 @@
 import { ref, watch, onUnmounted } from 'vue'
 import * as THREE from 'three'
 import type { ResourceItem, DeviceTelemetry } from '@/core/ColdStorageScene'
+import { RESOURCE_STATUS_LABEL, RESOURCE_TYPE_LABEL } from '@/utils/labels'
 
 const props = defineProps<{
   camera: THREE.Camera | null
@@ -48,11 +49,9 @@ watch(
 
 onUnmounted(() => cancelAnimationFrame(rafId))
 
-const statusLabel: Record<string, string> = {
-  available: '可用', booked: '已预约', offline: '离线', pending: '待审核',
-}
+const statusLabel = RESOURCE_STATUS_LABEL
 const statusClass: Record<string, string> = {
-  available: 'ok', booked: 'warn', offline: 'err', pending: 'info',
+  available: 'ok', booked: 'booked', pending: 'pending', offline: 'offline',
 }
 </script>
 
@@ -64,12 +63,12 @@ const statusClass: Record<string, string> = {
   >
     <div class="popup-header">
       <span class="popup-name">{{ resource.name }}</span>
-      <span class="tag" :class="statusClass[resource.status] || 'info'">
+      <span class="tag" :class="statusClass[resource.status] || 'pending'">
         {{ statusLabel[resource.status] || resource.status }}
       </span>
     </div>
     <div class="popup-body">
-      <div class="row"><span class="k">类型</span><span class="v">{{ resource.type }}</span></div>
+      <div class="row"><span class="k">类型</span><span class="v">{{ RESOURCE_TYPE_LABEL[resource.type] || resource.type }}</span></div>
       <div v-if="resource.location" class="row"><span class="k">位置</span><span class="v">{{ resource.location }}</span></div>
       <div v-if="resource.price != null" class="row">
         <span class="k">价格</span><span class="v price">¥{{ resource.price }}/天</span>
@@ -95,46 +94,47 @@ const statusClass: Record<string, string> = {
   position: absolute;
   transform: translate(-50%, -110%);
   min-width: 200px;
-  background: rgba(10, 26, 54, 0.92);
-  border: 1px solid var(--accent-cyan, #00e5ff);
-  border-radius: 8px;
-  box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+  background: var(--bg-card);
+  border: 1px solid var(--accent-cyan);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glow);
   pointer-events: auto;
   z-index: 10;
-  font-size: 12px;
-  color: var(--text-primary, #e0e6f0);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  backdrop-filter: blur(10px);
 }
 .popup-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.2);
+  border-bottom: 1px solid var(--border-soft);
 }
-.popup-name { font-weight: 600; color: var(--accent-cyan, #00e5ff); }
+.popup-name { font-weight: 600; color: var(--accent-cyan); }
 .tag {
   padding: 2px 8px;
   border-radius: 10px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
-.tag.ok { background: rgba(0, 255, 136, 0.15); color: #00ff88; }
-.tag.warn { background: rgba(255, 159, 67, 0.15); color: #ff9f43; }
-.tag.err { background: rgba(255, 71, 87, 0.15); color: #ff4757; }
-.tag.info { background: rgba(64, 158, 255, 0.15); color: #409eff; }
+.tag.ok { background: rgba(0, 229, 255, 0.14); color: var(--status-available); }
+.tag.booked { background: rgba(124, 108, 255, 0.16); color: var(--status-booked); }
+.tag.pending { background: rgba(143, 163, 184, 0.14); color: var(--status-pending); }
+.tag.offline { background: rgba(74, 90, 106, 0.2); color: var(--status-offline); }
 .popup-body { padding: 10px 12px; }
 .row {
   display: flex;
   justify-content: space-between;
   padding: 3px 0;
 }
-.k { color: var(--text-muted, #8a9bb5); }
-.v { color: var(--text-primary, #e0e6f0); }
-.v.price { color: #ff9f43; font-family: 'Consolas', monospace; }
-.v.time { font-family: 'Consolas', monospace; font-size: 11px; }
-.v.muted { color: var(--text-muted, #8a9bb5); }
+.k { color: var(--text-muted); }
+.v { color: var(--text-primary); }
+.v.price { color: var(--accent-orange); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.v.time { font-family: var(--font-mono); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.v.muted { color: var(--text-muted); }
 .divider {
   height: 1px;
-  background: rgba(0, 229, 255, 0.15);
+  background: var(--border-soft);
   margin: 6px 0;
 }
 </style>

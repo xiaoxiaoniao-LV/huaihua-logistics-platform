@@ -21,6 +21,7 @@ const levelLabels: Record<string, string> = { critical: '严重', warn: '警告'
 const levelTag: Record<string, string> = { critical: 'tag-red', warn: 'tag-orange', info: 'tag-blue' }
 const typeLabels: Record<string, string> = {
   temperature_low: '温度偏低', temperature_high: '温度偏高', humidity_high: '湿度偏高',
+  offline: '设备离线',
 }
 
 const filter = ref<'active' | 'resolved' | 'all'>('active')

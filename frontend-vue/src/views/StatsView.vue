@@ -7,6 +7,12 @@ import {
 } from '@/api/stats'
 import { useAuthStore } from '@/stores/auth'
 import { apiError } from '@/utils/error'
+import { theme } from '@/config/theme'
+import { ECHARTS_THEME } from '@/config/echartsTheme'
+import {
+  getReconciliation, listSettlements, updateSettlementStatus,
+  type Reconciliation, type Settlement,
+} from '@/api/settlements'
 
 const auth = useAuthStore()
 
@@ -23,36 +29,31 @@ let trendChart: echarts.ECharts | null = null
 let resourceChart: echarts.ECharts | null = null
 
 const axisStyle = {
-  axisLine: { lineStyle: { color: 'rgba(64,158,255,0.25)' } },
-  axisLabel: { color: 'rgba(240,245,255,0.5)', fontSize: 10 },
+  axisLine: { lineStyle: { color: theme.color.border.soft } },
+  axisLabel: { color: theme.color.text.muted, fontSize: theme.font.xs },
 }
 
 function ensureCharts() {
-  if (trendRef.value && !trendChart) trendChart = echarts.init(trendRef.value, 'dark')
-  if (resourceRef.value && !resourceChart) resourceChart = echarts.init(resourceRef.value, 'dark')
+  if (trendRef.value && !trendChart) trendChart = echarts.init(trendRef.value, ECHARTS_THEME)
+  if (resourceRef.value && !resourceChart) resourceChart = echarts.init(resourceRef.value, ECHARTS_THEME)
 }
 
 function renderTrend() {
   if (!trendChart) return
   trendChart.setOption({
     backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(10,26,54,0.9)',
-      borderColor: 'rgba(64,158,255,0.5)',
-      textStyle: { color: '#f0f5ff', fontSize: 11 },
-    },
-    legend: { data: ['订单数', '成交额', '佣金'], textStyle: { color: 'rgba(240,245,255,0.7)', fontSize: 11 }, top: 0 },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['订单数', '成交额', '佣金'], top: 0 },
     grid: { left: 50, right: 55, top: 34, bottom: 28 },
     xAxis: { type: 'category', data: trend.value.map((d) => d.date.slice(5)), ...axisStyle, splitLine: { show: false } },
     yAxis: [
-      { type: 'value', name: '单', ...axisStyle, splitLine: { lineStyle: { color: 'rgba(64,158,255,0.08)' } } },
+      { type: 'value', name: '单', ...axisStyle },
       { type: 'value', name: '元', ...axisStyle, splitLine: { show: false } },
     ],
     series: [
       { name: '订单数', type: 'bar', barWidth: 14, itemStyle: { color: 'rgba(64,158,255,0.55)' }, data: trend.value.map((d) => d.orders) },
-      { name: '成交额', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 5, lineStyle: { color: '#00e5ff', width: 2 }, itemStyle: { color: '#00e5ff' }, data: trend.value.map((d) => d.amount) },
-      { name: '佣金', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', lineStyle: { color: '#ff9f43', width: 2, type: 'dashed' }, data: trend.value.map((d) => d.commission) },
+      { name: '成交额', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 5, lineStyle: { color: theme.color.accent.cyan, width: 2 }, itemStyle: { color: theme.color.accent.cyan }, data: trend.value.map((d) => d.amount) },
+      { name: '佣金', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', lineStyle: { color: theme.color.accent.amber, width: 2, type: 'dashed' }, data: trend.value.map((d) => d.commission) },
     ],
   })
   trendChart.resize()
@@ -62,22 +63,16 @@ function renderResources() {
   if (!resourceChart) return
   resourceChart.setOption({
     backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' },
-      backgroundColor: 'rgba(10,26,54,0.9)',
-      borderColor: 'rgba(64,158,255,0.5)',
-      textStyle: { color: '#f0f5ff', fontSize: 11 },
-    },
-    legend: { data: ['可预约', '已预约', '其他'], textStyle: { color: 'rgba(240,245,255,0.7)', fontSize: 11 }, top: 0 },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { data: ['可预约', '已预约', '其他'], top: 0 },
     grid: { left: 60, right: 20, top: 34, bottom: 28 },
     xAxis: { type: 'category', data: resourceStats.value.map((r) => r.name), ...axisStyle },
-    yAxis: { type: 'value', ...axisStyle, splitLine: { lineStyle: { color: 'rgba(64,158,255,0.08)' } } },
+    yAxis: { type: 'value', ...axisStyle },
     series: [
-      { name: '可预约', type: 'bar', stack: 'total', barWidth: 26, itemStyle: { color: '#00ff88' }, data: resourceStats.value.map((r) => r.available) },
-      { name: '已预约', type: 'bar', stack: 'total', itemStyle: { color: '#ff9f43' }, data: resourceStats.value.map((r) => r.booked) },
+      { name: '可预约', type: 'bar', stack: 'total', barWidth: 26, itemStyle: { color: theme.color.status.available }, data: resourceStats.value.map((r) => r.available) },
+      { name: '已预约', type: 'bar', stack: 'total', itemStyle: { color: theme.color.status.booked }, data: resourceStats.value.map((r) => r.booked) },
       {
-        name: '其他', type: 'bar', stack: 'total', itemStyle: { color: 'rgba(64,158,255,0.45)' },
+        name: '其他', type: 'bar', stack: 'total', itemStyle: { color: theme.color.status.offline },
         data: resourceStats.value.map((r) => Math.max(0, r.total - r.available - r.booked)),
       },
     ],
@@ -113,15 +108,71 @@ function switchDays(d: number) {
   load()
 }
 
+// ---------- 结算与对账 ----------
+const recon = ref<Reconciliation | null>(null)
+const settlements = ref<Settlement[]>([])
+const settleStatus = ref('')
+const settleLoading = ref(false)
+const settleError = ref('')
+const settlingId = ref<number | null>(null)
+
+const settleLabels: Record<string, string> = {
+  pending: '待确认', confirmed: '已确认', paid: '已打款', void: '已作废',
+}
+const settleTag: Record<string, string> = {
+  pending: 'tag-orange', confirmed: 'tag-blue', paid: 'tag-green', void: 'tag-red',
+}
+
+function money(v?: number | string | null) {
+  if (v == null || v === '') return '-'
+  return `¥${Number(v).toFixed(2)}`
+}
+
+async function loadSettlements() {
+  settleLoading.value = true
+  settleError.value = ''
+  try {
+    const [reconResp, listResp] = await Promise.all([
+      getReconciliation(),
+      listSettlements({ status: settleStatus.value || undefined, page: 1, page_size: 50 }),
+    ])
+    recon.value = reconResp.data
+    settlements.value = listResp.data
+  } catch (e) {
+    settleError.value = apiError(e, '加载结算数据失败')
+  } finally {
+    settleLoading.value = false
+  }
+}
+
+async function moveSettlement(s: Settlement, next: string, confirmText: string) {
+  if (!window.confirm(confirmText)) return
+  settleError.value = ''
+  settlingId.value = s.id
+  try {
+    await updateSettlementStatus(s.id, next)
+    await loadSettlements()
+  } catch (e) {
+    settleError.value = apiError(e, '更新结算状态失败')
+  } finally {
+    settlingId.value = null
+  }
+}
+
 function handleResize() {
   trendChart?.resize()
   resourceChart?.resize()
 }
 
+function refreshAll() {
+  load()
+  loadSettlements()
+}
+
 onMounted(async () => {
   if (!auth.user) await auth.fetchMe()
   if (!auth.isAdmin) return
-  await load()
+  await Promise.all([load(), loadSettlements()])
   window.addEventListener('resize', handleResize)
 })
 
@@ -154,8 +205,8 @@ onUnmounted(() => {
           </button>
         </div>
         <span class="spacer"></span>
-        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-          {{ loading ? '刷新中…' : '刷新' }}
+        <button class="btn btn-ghost btn-sm" :disabled="loading || settleLoading" @click="refreshAll">
+          {{ loading || settleLoading ? '刷新中…' : '刷新' }}
         </button>
       </div>
 
@@ -226,14 +277,137 @@ onUnmounted(() => {
               <tr v-for="r in resourceStats" :key="r.type">
                 <td>{{ r.name }}</td>
                 <td class="mono">{{ r.total }}</td>
-                <td class="mono" style="color: var(--accent-green)">{{ r.available }}</td>
-                <td class="mono" style="color: var(--accent-orange)">{{ r.booked }}</td>
-                <td class="mono muted">{{ r.pending }}</td>
+                <td class="mono" style="color: var(--status-available)">{{ r.available }}</td>
+                <td class="mono" style="color: var(--status-booked)">{{ r.booked }}</td>
+                <td class="mono" style="color: var(--status-pending)">{{ r.pending }}</td>
                 <td class="mono">{{ (r.utilization * 100).toFixed(1) }}%</td>
                 <td class="mono">¥{{ r.finished_amount.toFixed(2) }}</td>
               </tr>
               <tr v-if="!resourceStats.length">
                 <td colspan="7"><div class="empty">{{ loading ? '加载中…' : '暂无数据' }}</div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 16px">
+        <div class="panel-title">结算与对账</div>
+        <div class="panel-body">
+          <div v-if="settleError" class="error-text">{{ settleError }}</div>
+
+          <div class="recon">
+            <div class="recon-item">
+              <div class="recon-value">{{ recon?.orders ?? 0 }}</div>
+              <div class="recon-label">{{ recon?.day || '今日' }} 订单数</div>
+            </div>
+            <div class="recon-item">
+              <div class="recon-value">{{ money(recon?.gmv) }}</div>
+              <div class="recon-label">当日 GMV</div>
+            </div>
+            <div class="recon-item">
+              <div class="recon-value orange">{{ money(recon?.commission) }}</div>
+              <div class="recon-label">当日佣金</div>
+            </div>
+            <div class="recon-item">
+              <div class="recon-value green">{{ money(recon?.paid_amount) }}</div>
+              <div class="recon-label">当日回款</div>
+            </div>
+            <div class="recon-item">
+              <div class="recon-value">{{ recon?.pending_settlements ?? 0 }}</div>
+              <div class="recon-label">待打款结算单</div>
+            </div>
+            <div class="recon-item">
+              <div class="recon-value orange">{{ money(recon?.pending_payout) }}</div>
+              <div class="recon-label">待打款金额</div>
+            </div>
+          </div>
+
+          <div class="toolbar" style="margin: 12px 0 8px">
+            <div class="filters">
+              <button
+                v-for="opt in [
+                  { v: '', t: '全部' },
+                  { v: 'pending', t: '待确认' },
+                  { v: 'confirmed', t: '已确认' },
+                  { v: 'paid', t: '已打款' },
+                  { v: 'void', t: '已作废' },
+                ]"
+                :key="opt.v"
+                class="btn btn-sm"
+                :class="settleStatus === opt.v ? '' : 'btn-ghost'"
+                @click="settleStatus = opt.v; loadSettlements()"
+              >
+                {{ opt.t }}
+              </button>
+            </div>
+          </div>
+
+          <table class="table">
+            <thead>
+              <tr>
+                <th>结算单</th>
+                <th>订单</th>
+                <th>供给方</th>
+                <th>订单金额</th>
+                <th>佣金</th>
+                <th>应付供给方</th>
+                <th>状态</th>
+                <th style="width: 200px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in settlements" :key="s.id">
+                <td class="mono muted">#{{ s.id }}</td>
+                <td class="mono">#{{ s.order_id }}</td>
+                <td class="mono">#{{ s.supplier_id }}</td>
+                <td class="mono">{{ money(s.amount) }}</td>
+                <td class="mono" style="color: var(--accent-orange)">
+                  {{ money(s.commission) }}（{{ (Number(s.commission_rate) * 100).toFixed(1) }}%）
+                </td>
+                <td class="mono">{{ money(s.payable_to_supplier) }}</td>
+                <td>
+                  <span class="tag" :class="settleTag[s.status] || 'tag-blue'">
+                    {{ settleLabels[s.status] || s.status }}
+                  </span>
+                </td>
+                <td>
+                  <template v-if="settlingId === s.id">
+                    <span class="muted" style="font-size: 12px">处理中…</span>
+                  </template>
+                  <template v-else>
+                    <button
+                      v-if="s.status === 'pending'"
+                      class="btn btn-sm"
+                      @click="moveSettlement(s, 'confirmed', '确认该结算单金额无误？')"
+                    >
+                      确认
+                    </button>
+                    <button
+                      v-if="s.status === 'confirmed'"
+                      class="btn btn-sm"
+                      @click="moveSettlement(s, 'paid', '确认已向供给方打款？')"
+                    >
+                      标记已打款
+                    </button>
+                    <button
+                      v-if="s.status === 'pending' || s.status === 'confirmed'"
+                      class="btn btn-danger btn-sm"
+                      @click="moveSettlement(s, 'void', '确认作废该结算单？')"
+                    >
+                      作废
+                    </button>
+                    <span v-if="s.status === 'paid'" class="muted" style="font-size: 12px">
+                      {{ s.settled_at ? s.settled_at.replace('T', ' ').slice(0, 16) : '已打款' }}
+                    </span>
+                    <span v-if="s.status === 'void'" class="muted" style="font-size: 12px">已作废</span>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="!settlements.length">
+                <td colspan="8">
+                  <div class="empty">{{ settleLoading ? '加载中…' : '暂无结算单（订单完成后自动生成）' }}</div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -259,15 +433,37 @@ onUnmounted(() => {
   backdrop-filter: blur(10px);
 }
 .kpi-value {
-  font-size: 22px;
+  font-size: var(--fs-xl);
   font-weight: 700;
-  font-family: 'Consolas', 'Monaco', monospace;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--accent-cyan);
 }
 .kpi-value.orange { color: var(--accent-orange); }
-.kpi-value.green { color: var(--accent-green); }
+.kpi-value.green { color: var(--status-available); }
 .kpi-value.red { color: var(--accent-red); }
-.kpi-label { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 6px; }
+
+.recon {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+.recon-item {
+  background: rgba(64, 158, 255, 0.05);
+  border: 1px solid var(--border-glow);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.recon-value {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+}
+.recon-value.orange { color: var(--accent-orange); }
+.recon-value.green { color: var(--status-available); }
+.recon-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 4px; }
 
 .charts { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
 .chart-panel { padding-bottom: 8px; }
@@ -276,5 +472,6 @@ onUnmounted(() => {
 @media (max-width: 1100px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .charts { grid-template-columns: 1fr; }
+  .recon { grid-template-columns: repeat(3, 1fr); }
 }
 </style>

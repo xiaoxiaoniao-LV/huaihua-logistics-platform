@@ -18,5 +18,5 @@ export function listAuditLogs(params?: {
   page?: number
   page_size?: number
 }) {
-  return http.get<AuditLogItem[]>('/api/audit-logs', { params })
+  return http.get<AuditLogItem[]>('/api/v1/audit-logs', { params })
 }

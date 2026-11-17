@@ -29,5 +29,5 @@ export function recommend(params: {
   max_price?: number
   top_n?: number
 }) {
-  return http.get<{ count: number; results: MatchResult[] }>('/api/match/recommend', { params })
+  return http.get<{ count: number; results: MatchResult[] }>('/api/v1/match/recommend', { params })
 }

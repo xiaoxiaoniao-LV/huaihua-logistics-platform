@@ -12,12 +12,12 @@ export interface AdminUser {
 }
 
 export function listUsers(params?: { keyword?: string; role?: string; is_active?: boolean }) {
-  return http.get<AdminUser[]>('/api/users', { params })
+  return http.get<AdminUser[]>('/api/v1/users', { params })
 }
 
 export function adminUpdateUser(
   id: number,
   payload: { role?: string; is_active?: boolean; company_name?: string; contact?: string },
 ) {
-  return http.put<AdminUser>(`/api/users/${id}`, payload)
+  return http.put<AdminUser>(`/api/v1/users/${id}`, payload)
 }

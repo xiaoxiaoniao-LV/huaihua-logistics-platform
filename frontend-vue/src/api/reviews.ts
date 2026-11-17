@@ -20,13 +20,13 @@ export interface UserRatingSummary {
 }
 
 export function createReview(payload: { order_id: number; rating: number; content?: string }) {
-  return http.post<Review>('/api/reviews', payload)
+  return http.post<Review>('/api/v1/reviews', payload)
 }
 
 export function listOrderReviews(orderId: number) {
-  return http.get<Review[]>(`/api/reviews/order/${orderId}`)
+  return http.get<Review[]>(`/api/v1/reviews/order/${orderId}`)
 }
 
 export function getUserRating(userId: number) {
-  return http.get<UserRatingSummary>(`/api/reviews/user/${userId}`)
+  return http.get<UserRatingSummary>(`/api/v1/reviews/user/${userId}`)
 }

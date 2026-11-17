@@ -26,8 +26,8 @@ export const useAuthStore = defineStore('auth', {
     displayName: (s) => s.user?.company_name || s.user?.username || '',
   },
   actions: {
-    async login(username: string, password: string) {
-      const { data } = await apiLogin(username, password)
+    async login(username: string, password: string, client: 'admin' | 'supplier' | 'app' | 'screen' = 'admin') {
+      const { data } = await apiLogin(username, password, client)
       this.setTokens(data.access_token, data.refresh_token || '')
       await this.fetchMe()
     },

@@ -26,24 +26,26 @@ function logout() {
   <div class="manage">
     <header class="topbar">
       <div class="left">
-        <span class="logo">怀化国际陆港</span>
+        <span class="logo">怀化国际陆港 · 冷链撮合</span>
         <span class="divider">|</span>
-        <span class="caption">运营管理</span>
+        <span class="caption">虚拟构建 · 供给工作台</span>
       </div>
 
       <nav class="nav">
-        <RouterLink to="/manage/market" class="nav-item">资源市场</RouterLink>
-        <RouterLink to="/manage/resources" class="nav-item">我的资源</RouterLink>
-        <RouterLink to="/manage/orders" class="nav-item">我的订单</RouterLink>
-        <RouterLink to="/manage/alerts" class="nav-item">告警处理</RouterLink>
-        <RouterLink to="/manage/devices" class="nav-item">设备管理</RouterLink>
-        <RouterLink v-if="auth.isAdmin" to="/manage/stats" class="nav-item">运营统计</RouterLink>
-        <RouterLink to="/manage/profile" class="nav-item">个人中心</RouterLink>
-        <RouterLink v-if="auth.isAdmin" to="/manage/admin" class="nav-item">审核与用户</RouterLink>
+        <RouterLink to="/workbench" class="nav-item">工作台</RouterLink>
+        <RouterLink to="/market" class="nav-item">资源市场</RouterLink>
+        <RouterLink to="/resources" class="nav-item">资源发布</RouterLink>
+        <RouterLink to="/orders" class="nav-item">订单履约</RouterLink>
+        <RouterLink to="/alerts" class="nav-item">告警处置</RouterLink>
+        <RouterLink to="/devices" class="nav-item">设备管理</RouterLink>
+        <RouterLink v-if="auth.isAdmin" to="/twin" class="nav-item">孪生配置</RouterLink>
+        <RouterLink v-if="auth.isAdmin" to="/stats" class="nav-item">运营统计</RouterLink>
+        <RouterLink to="/profile" class="nav-item">个人中心</RouterLink>
+        <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-item">审核与用户</RouterLink>
       </nav>
 
       <div class="right">
-        <RouterLink to="/" class="ghost-link">数字孪生大屏</RouterLink>
+        <a href="./screen.html" class="ghost-link">指挥大屏</a>
         <div v-if="auth.user" class="user">
           <span class="name">{{ auth.displayName }}</span>
           <span class="tag tag-blue">{{ roleLabel[auth.user.role] || auth.user.role }}</span>

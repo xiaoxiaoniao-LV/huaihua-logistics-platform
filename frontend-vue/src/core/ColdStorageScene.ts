@@ -13,13 +13,20 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import {
   MODEL_BASE,
   MODEL_PATH_MAP,
   STATUS_COLOR,
+  SCENE_COLOR,
   PERF_BUDGET,
+  resolvePerfBudget,
   DEFAULT_CAMERA,
 } from '@/config/scene'
+import { hexToNumber, theme } from '@/config/theme'
 
 /** 资源项（与 resources store 的 item 结构对齐） */
 export interface ResourceItem {
@@ -70,6 +77,14 @@ export class ColdStorageScene {
   private raycaster = new THREE.Raycaster()
   private pointer = new THREE.Vector2()
   private pickedObject: THREE.Object3D | null = null
+
+  /** 后处理（Bloom）与选中态光柱 */
+  private composer: EffectComposer | null = null
+  private bloomPass: UnrealBloomPass | null = null
+  private budget = resolvePerfBudget()
+  private beam: THREE.Mesh | null = null
+  private boosted: { mat: THREE.MeshStandardMaterial; prev: number }[] = []
+  private clock = new THREE.Clock()
 
   private resources: ResourceItem[] = []
   private telemetryMap = new Map<string, DeviceTelemetry>() // device_code -> 最新数据
@@ -126,6 +141,10 @@ export class ColdStorageScene {
   dispose() {
     cancelAnimationFrame(this.animId)
     this.unbindPointerEvents()
+    this.clearSelection()
+    this.composer?.dispose()
+    this.composer = null
+    this.bloomPass = null
     this.controls?.dispose()
     this.renderer?.dispose()
     this.scene?.traverse((obj) => {
@@ -143,7 +162,7 @@ export class ColdStorageScene {
   private buildScene() {
     this.scene = new THREE.Scene()
     this.scene.background = null
-    this.scene.fog = new THREE.FogExp2(0x050d1f, 0.015)
+    this.scene.fog = new THREE.FogExp2(SCENE_COLOR.background, 0.015)
 
     this.camera = new THREE.PerspectiveCamera(
       50,
@@ -154,7 +173,7 @@ export class ColdStorageScene {
     this.camera.position.set(...DEFAULT_CAMERA.position)
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERF_BUDGET.pixelRatio))
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.budget.pixelRatio))
     this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight, false)
     this.renderer.shadowMap.enabled = PERF_BUDGET.enableShadow
     this.renderer.shadowMap.type = THREE.PCFShadowMap
@@ -171,10 +190,33 @@ export class ColdStorageScene {
 
     // 冷链箱父组必须先挂到场景，否则后续 group.add 会把箱子从场景摘走
     this.scene.add(this.coldBoxGroup)
+
+    this.setupPostProcessing()
+  }
+
+  /** 泛光后处理：让灯带/状态色在深色背景上「发光」，低端设备自动跳过 */
+  private setupPostProcessing() {
+    if (!this.budget.bloom.enabled) return
+    const w = this.canvas.clientWidth
+    const h = this.canvas.clientHeight
+    this.composer = new EffectComposer(this.renderer)
+    this.composer.setPixelRatio(this.renderer.getPixelRatio())
+    this.composer.setSize(w, h)
+    this.composer.addPass(new RenderPass(this.scene, this.camera))
+
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(w, h),
+      this.budget.bloom.strength,
+      this.budget.bloom.radius,
+      this.budget.bloom.threshold,
+    )
+    this.composer.addPass(bloom)
+    this.composer.addPass(new OutputPass())
+    this.bloomPass = bloom
   }
 
   private buildLights() {
-    this.scene.add(new THREE.AmbientLight(0x409eff, 0.4))
+    this.scene.add(new THREE.AmbientLight(hexToNumber(theme.color.accent.blue), 0.4))
 
     const sun = new THREE.DirectionalLight(0xffffff, 1.2)
     sun.position.set(15, 25, 10)
@@ -186,11 +228,11 @@ export class ColdStorageScene {
     sun.shadow.camera.bottom = -30
     this.scene.add(sun)
 
-    const rim1 = new THREE.PointLight(0x00e5ff, 1.5, 60)
+    const rim1 = new THREE.PointLight(SCENE_COLOR.accent, 1.5, 60)
     rim1.position.set(-10, 8, -8)
     this.scene.add(rim1)
 
-    const rim2 = new THREE.PointLight(0x00ff88, 1, 50)
+    const rim2 = new THREE.PointLight(hexToNumber(theme.color.accent.green), 1, 50)
     rim2.position.set(10, 6, 8)
     this.scene.add(rim2)
   }
@@ -204,7 +246,7 @@ export class ColdStorageScene {
     ground.receiveShadow = true
     this.scene.add(ground)
 
-    const grid = new THREE.GridHelper(80, 40, 0x00e5ff, 0x1a3a5a)
+    const grid = new THREE.GridHelper(80, 40, SCENE_COLOR.accent, SCENE_COLOR.grid)
     ;(grid.material as THREE.Material).opacity = 0.2
     ;(grid.material as THREE.Material).transparent = true
     grid.position.y = 0.01
@@ -228,7 +270,7 @@ export class ColdStorageScene {
 
     const topLight = new THREE.Mesh(
       new THREE.BoxGeometry(6.4, 0.15, 4.4),
-      new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x00e5ff, emissiveIntensity: 1.2 }),
+      new THREE.MeshStandardMaterial({ color: SCENE_COLOR.accent, emissive: SCENE_COLOR.accent, emissiveIntensity: 1.2 }),
     )
     topLight.position.set(0, 5.1, -4)
     shell.add(topLight)
@@ -343,6 +385,8 @@ export class ColdStorageScene {
 
   /** 根据资源列表重建冷链箱（外部模型优先，无模型用几何体） */
   private updateColdBoxes() {
+    // 重建后原选中对象已不存在，先清掉光柱
+    this.clearSelection()
     // 清旧（只清组内子节点，组本身保留在场景中）
     this.coldBoxGroup.clear()
 
@@ -397,7 +441,7 @@ export class ColdStorageScene {
 
   /** 按资源状态着色：只染主箱体（Body），保留制冷机组/面板等原材质 */
   private applyStatusColor(obj: THREE.Object3D, status: string) {
-    const color = STATUS_COLOR[status] || 0x409eff
+    const color = STATUS_COLOR[status] || hexToNumber(theme.color.accent.blue)
     const targets: THREE.Mesh[] = []
     obj.traverse((child) => {
       if (child instanceof THREE.Mesh && child.name.startsWith('Body')) targets.push(child)
@@ -413,8 +457,61 @@ export class ColdStorageScene {
       if (!mat?.color) return
       mat.color.setHex(color)
       mat.emissive?.setHex(color)
-      mat.emissiveIntensity = 0.18
+      mat.emissiveIntensity = 0.38
     })
+  }
+
+  // ===================== 选中高亮 =====================
+
+  /** 选中对象：提高自发光 + 加一道向上光柱，与右侧面板联动 */
+  private setSelected(target: THREE.Object3D | null) {
+    this.clearSelection()
+    if (!target) return
+
+    const color = theme.color.accent.cyan
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.95, 0.95, 7, 24, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    )
+    const worldPos = new THREE.Vector3()
+    target.getWorldPosition(worldPos)
+    beam.position.set(worldPos.x, worldPos.y + 3.2, worldPos.z)
+    beam.renderOrder = 2
+    this.scene.add(beam)
+    this.beam = beam
+
+    target.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      const mat = child.material as THREE.MeshStandardMaterial
+      if (!mat?.emissive) return
+      this.boosted.push({ mat, prev: mat.emissiveIntensity })
+      mat.emissiveIntensity = Math.max(mat.emissiveIntensity, 1.1)
+    })
+  }
+
+  private clearSelection() {
+    this.boosted.forEach(({ mat, prev }) => (mat.emissiveIntensity = prev))
+    this.boosted = []
+    if (!this.beam) return
+    this.scene.remove(this.beam)
+    this.beam.geometry.dispose()
+    ;(this.beam.material as THREE.Material).dispose()
+    this.beam = null
+  }
+
+  /** 光柱缓慢呼吸，避免静态死板 */
+  private updateBeam() {
+    if (!this.beam) return
+    const t = this.clock.getElapsedTime()
+    ;(this.beam.material as THREE.MeshBasicMaterial).opacity =
+      0.14 + Math.abs(Math.sin(t * 1.6)) * 0.18
   }
 
   // ===================== 设备数据标签 =====================
@@ -455,6 +552,7 @@ export class ColdStorageScene {
       }
       if (target) {
         this.pickedObject = target
+        this.setSelected(target)
         const worldPos = new THREE.Vector3()
         target.getWorldPosition(worldPos)
         this.onPick?.({
@@ -470,6 +568,7 @@ export class ColdStorageScene {
     }
     // 点空了
     this.pickedObject = null
+    this.clearSelection()
     this.onPick?.(null)
   }
 
@@ -480,6 +579,8 @@ export class ColdStorageScene {
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(w, h, false)
+    this.composer?.setSize(w, h)
+    this.bloomPass?.setSize(w, h)
   }
 
   // ===================== 渲染循环 =====================
@@ -488,7 +589,9 @@ export class ColdStorageScene {
     const animate = () => {
       this.animId = requestAnimationFrame(animate)
       this.controls.update()
-      this.renderer.render(this.scene, this.camera)
+      this.updateBeam()
+      if (this.composer) this.composer.render()
+      else this.renderer.render(this.scene, this.camera)
     }
     animate()
   }

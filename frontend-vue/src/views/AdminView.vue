@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { listResources, reviewResource, type Resource } from '@/api/resources'
 import { adminUpdateUser, listUsers, type AdminUser } from '@/api/users'
@@ -6,6 +6,7 @@ import { listAuditLogs, type AuditLogItem } from '@/api/audit'
 import { useAuthStore } from '@/stores/auth'
 import AppModal from '@/components/common/AppModal.vue'
 import { apiError } from '@/utils/error'
+import { fmtPrice } from '@/utils/format'
 
 const auth = useAuthStore()
 
@@ -14,7 +15,7 @@ const error = ref('')
 const busy = ref<number | null>(null)
 
 const typeLabels: Record<string, string> = {
-  warehouse: '仓库', cold_box: '冷链箱', vehicle: '运力', equipment: '设备',
+  warehouse: '冷库', cold_box: '冷链箱位', vehicle: '冷藏运输', equipment: '温控设备',
 }
 const roleLabels: Record<string, string> = {
   supplier: '供给方', demander: '需求方', admin: '管理员',
@@ -189,7 +190,7 @@ onMounted(async () => {
               <td class="muted">{{ publisherName(r.user_id) }}</td>
               <td class="muted">{{ r.location || '-' }}</td>
               <td class="mono" style="color: var(--accent-orange)">
-                {{ r.price != null ? `¥${r.price}/${r.price_unit || '天'}` : '-' }}
+                {{ fmtPrice(r.price, r.price_unit) }}
               </td>
               <td>
                 <button class="btn btn-sm" :disabled="busy === r.id" @click="approve(r)">通过</button>
@@ -361,8 +362,8 @@ onMounted(async () => {
 .tab.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); }
 .badge {
   background: var(--accent-red);
-  color: #fff;
-  font-size: 10px;
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
   border-radius: 8px;
   padding: 1px 6px;
 }

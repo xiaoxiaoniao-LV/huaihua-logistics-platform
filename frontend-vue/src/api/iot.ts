@@ -25,15 +25,15 @@ export interface IoTAlert {
 }
 
 export function queryIoTData(params: { device_code?: string; limit?: number }) {
-  return http.get<{ count: number; data: IoTDataPoint[] }>('/api/iot/data', { params })
+  return http.get<{ count: number; data: IoTDataPoint[] }>('/api/v1/iot/data', { params })
 }
 
 export function listAlerts(params?: { status?: string; limit?: number }) {
-  return http.get<{ count: number; alerts: IoTAlert[] }>('/api/iot/alerts', { params })
+  return http.get<{ count: number; alerts: IoTAlert[] }>('/api/v1/iot/alerts', { params })
 }
 
 export function resolveAlert(id: number) {
-  return http.post<{ id: number; status: string }>(`/api/iot/alerts/${id}/resolve`)
+  return http.post<{ id: number; status: string }>(`/api/v1/iot/alerts/${id}/resolve`)
 }
 
 export interface AlertRule {
@@ -49,16 +49,16 @@ export interface AlertRule {
 }
 
 export function listAlertRules() {
-  return http.get<AlertRule[]>('/api/iot/rules')
+  return http.get<AlertRule[]>('/api/v1/iot/rules')
 }
 
 export function saveAlertRule(
   resourceId: number,
   payload: { temp_min?: number; temp_max?: number; humidity_max?: number; enabled?: boolean },
 ) {
-  return http.put<AlertRule>(`/api/iot/rules/${resourceId}`, payload)
+  return http.put<AlertRule>(`/api/v1/iot/rules/${resourceId}`, payload)
 }
 
 export function deleteAlertRule(resourceId: number) {
-  return http.delete<void>(`/api/iot/rules/${resourceId}`)
+  return http.delete<void>(`/api/v1/iot/rules/${resourceId}`)
 }

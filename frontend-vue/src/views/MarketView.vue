@@ -1,12 +1,13 @@
-<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { listResources, type Resource } from '@/api/resources'
 import { createOrder } from '@/api/orders'
 import AppModal from '@/components/common/AppModal.vue'
 import { apiError } from '@/utils/error'
+import { fmtPrice } from '@/utils/format'
 
 const typeLabels: Record<string, string> = {
-  warehouse: '仓库', cold_box: '冷链箱', vehicle: '运力', equipment: '设备',
+  warehouse: '冷库', cold_box: '冷链箱位', vehicle: '冷藏运输', equipment: '温控设备',
 }
 const statusLabels: Record<string, string> = {
   available: '可预约', booked: '已预约', pending: '待审核', offline: '已下架',
@@ -169,7 +170,7 @@ onMounted(load)
             <td class="muted">{{ typeLabels[r.type] || r.type }}</td>
             <td class="muted">{{ r.location || '-' }}</td>
             <td class="mono" style="color: var(--accent-orange)">
-              {{ r.price != null ? `¥${r.price}/${r.price_unit || '天'}` : '-' }}
+              {{ fmtPrice(r.price, r.price_unit) }}
             </td>
             <td>
               <span class="tag" :class="statusTag[r.status] || 'tag-blue'">
@@ -202,7 +203,7 @@ onMounted(load)
           {{ typeLabels[ordering.type] || ordering.type }} · {{ ordering.location || '未填写位置' }}
         </div>
         <div v-if="ordering.price != null" class="summary-price">
-          ¥{{ ordering.price }} / {{ ordering.price_unit || '天' }}
+          {{ fmtPrice(ordering.price, ordering.price_unit) }}
         </div>
       </div>
 

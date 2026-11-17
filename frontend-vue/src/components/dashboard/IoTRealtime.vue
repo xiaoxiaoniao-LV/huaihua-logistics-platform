@@ -2,40 +2,46 @@
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { useIoTStore } from '@/stores/iot'
+import { theme } from '@/config/theme'
+import { ECHARTS_THEME } from '@/config/echartsTheme'
 
 const iot = useIoTStore()
 const chartRef = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
 
+const axisName = { color: theme.color.text.muted, fontSize: theme.font.xs }
+
 function initChart() {
   if (!chartRef.value) return
-  chart = echarts.init(chartRef.value, 'dark')
+  chart = echarts.init(chartRef.value, ECHARTS_THEME)
   chart.setOption({
     backgroundColor: 'transparent',
-    grid: { left: 45, right: 15, top: 10, bottom: 28 },
+    grid: { left: 46, right: 16, top: 24, bottom: 24 },
     xAxis: {
       type: 'time',
-      axisLine: { lineStyle: { color: 'rgba(64,158,255,0.25)' } },
-      axisLabel: { color: 'rgba(240,245,255,0.5)', fontSize: 10, formatter: (v: number) => new Date(v).toLocaleTimeString('zh-CN', { hour12: false }) },
-      splitLine: { show: false },
+      axisLabel: {
+        formatter: (v: number) => new Date(v).toLocaleTimeString('zh-CN', { hour12: false }),
+      },
     },
     yAxis: [
-      { name: '温度℃', type: 'value', axisLine: { lineStyle: { color: 'rgba(64,158,255,0.25)' } }, axisLabel: { color: 'rgba(240,245,255,0.5)', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(64,158,255,0.08)' } } },
-      { name: '湿度%', type: 'value', min: 0, max: 100, axisLine: { lineStyle: { color: 'rgba(255,159,67,0.25)' } }, axisLabel: { color: 'rgba(240,245,255,0.5)', fontSize: 10 }, splitLine: { show: false } },
+      { name: '温度℃', type: 'value', nameTextStyle: axisName },
+      { name: '湿度%', type: 'value', min: 0, max: 100, nameTextStyle: axisName, splitLine: { show: false } },
     ],
-    tooltip: { trigger: 'axis', backgroundColor: 'rgba(10,26,54,0.9)', borderColor: 'rgba(64,158,255,0.5)', textStyle: { color: '#f0f5ff', fontSize: 11 } },
     series: [
       {
         name: '温度', type: 'line', smooth: true, symbol: 'none',
-        lineStyle: { color: '#00e5ff', width: 2 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(0,229,255,0.3)' }, { offset: 1, color: 'rgba(0,229,255,0)' },
-        ]) },
+        lineStyle: { color: theme.color.accent.cyan, width: 2 },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(0,229,255,0.28)' },
+            { offset: 1, color: 'rgba(0,229,255,0)' },
+          ]),
+        },
         data: [] as [number, number][],
       },
       {
         name: '湿度', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
-        lineStyle: { color: '#ff9f43', width: 2 },
+        lineStyle: { color: theme.color.accent.amber, width: 2 },
         data: [] as [number, number][],
       },
     ],
@@ -75,7 +81,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="panel">
+  <div class="panel panel--secondary iot-panel">
     <div class="panel-title">IoT 实时监测</div>
     <div class="panel-body">
       <div ref="chartRef" class="chart-box"></div>
@@ -84,5 +90,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.chart-box { width: 100%; height: 180px; }
+.iot-panel { display: flex; flex-direction: column; }
+.iot-panel > .panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-bottom: var(--space-2);
+}
+.chart-box { width: 100%; height: 100%; min-height: 120px; }
 </style>

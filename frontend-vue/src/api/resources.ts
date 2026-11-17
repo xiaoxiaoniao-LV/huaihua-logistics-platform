@@ -23,11 +23,11 @@ export function listResources(params?: {
   page?: number
   page_size?: number
 }) {
-  return http.get<Resource[]>('/api/resources', { params })
+  return http.get<Resource[]>('/api/v1/resources', { params })
 }
 
 export function getResource(id: number) {
-  return http.get<Resource>(`/api/resources/${id}`)
+  return http.get<Resource>(`/api/v1/resources/${id}`)
 }
 
 export interface ResourcePayload {
@@ -42,18 +42,18 @@ export interface ResourcePayload {
 }
 
 export function createResource(payload: ResourcePayload) {
-  return http.post<Resource>('/api/resources', payload)
+  return http.post<Resource>('/api/v1/resources', payload)
 }
 
 export function updateResource(id: number, payload: Partial<ResourcePayload> & { status?: string }) {
-  return http.put<Resource>(`/api/resources/${id}`, payload)
+  return http.put<Resource>(`/api/v1/resources/${id}`, payload)
 }
 
 export function deleteResource(id: number) {
-  return http.delete<void>(`/api/resources/${id}`)
+  return http.delete<void>(`/api/v1/resources/${id}`)
 }
 
 /** 管理员审核待审核资源：通过→上架，驳回→下架 */
 export function reviewResource(id: number, approve: boolean, reason?: string) {
-  return http.post<Resource>(`/api/resources/${id}/review`, { approve, reason })
+  return http.post<Resource>(`/api/v1/resources/${id}/review`, { approve, reason })
 }

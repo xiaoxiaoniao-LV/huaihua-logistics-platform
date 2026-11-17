@@ -4,8 +4,7 @@ ENV PYTHONUNBUFFERED=1 TZ=Asia/Shanghai
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir paho-mqtt==2.1.0
+COPY iot/simulator_http.py ./
 
-COPY iot/simulator.py ./
-
-CMD ["python", "simulator.py"]
+# 演示默认设备走 HTTP 窄表上报；交互命令需 docker run -it
+CMD ["python", "simulator_http.py", "--device", "SIM-DEMO-01", "--interval", "5"]

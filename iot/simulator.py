@@ -35,7 +35,7 @@ def report_ota(code: str, target: str) -> None:
         "message": "模拟器升级完成",
     }).encode()
     req = urllib.request.Request(
-        API_BASE + "/api/devices/ota/report",
+        API_BASE + "/api/v1/devices/ota/report",
         data=body,
         headers={"Content-Type": "application/json", "X-Device-Token": DEVICE_TOKEN},
         method="POST",

@@ -1,0 +1,15 @@
+{
+  "version": "3.1.0",
+  "files": [
+    {
+      "name": "main.py",
+      "size": 16098,
+      "sha256": "e3a0f72216b70254cfdf54ade873282258377d3c5792dbfd6be8ed8995be82c5"
+    },
+    {
+      "name": "ota.py",
+      "size": 5406,
+      "sha256": "1ee5e722920e044baaf99f8683ad46d6e377711a7ebb36f6a11945d7da450fe9"
+    }
+  ]
+}

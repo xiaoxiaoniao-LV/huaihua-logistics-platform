@@ -1,56 +1,57 @@
 # 3D 模型资源目录
 
-本目录下的 GLB 模型由 `three.js GLTFExporter` 程序化生成，全部为米制、Y 轴朝上，并保留业务层级命名，供前端「可拆解」交互使用。
+本目录的模型由 Blender 脚本程序化建模并导出（`assets/blender/run_all.py`），
+全部为米制、Y 轴朝上，保留业务层级命名，供大屏「园区 → 货位 → 设备」三级下钻使用。
 
-## 模型清单
+## 模型清单（双档）
 
-| 文件名 | 尺寸(米) | 说明 |
+| 文件名 | 面数 | 体积 | 尺寸(米) | 说明 |
+|---|---|---|---|---|
+| `park_hi.glb` / `park_lite.glb` | 31,448 / 7,800 | 1.6MB / 0.4MB | 200 × 160 × 14.4 | 园区：两栋冷库、常温仓、月台、卡车、围界 |
+| `coldroom_hi.glb` / `coldroom_lite.glb` | 31,816 / 13,032 | 1.8MB / 0.76MB | 54 × 41.4 × 12.2 | 冷库内部：6 排 × 18 跨 × 3 层货架、648 个货位锚点 |
+| `coldbox_hi.glb` / `coldbox_lite.glb` | 772 / 300 | 50KB / 24KB | 1.27 × 1.69 × 1.07 | 冷链箱：货位状态着色对象 |
+| `truck_hi.glb` / `truck_lite.glb` | 4,040 / 980 | 182KB / 41KB | 12.35 × 3.93 × 3.1 | 9.6m 冷藏车 |
+| `dock_hi.glb` / `dock_lite.glb` | 732 / 240 | 45KB / 18KB | 5.12 × 4.4 × 3.45 | 月台门与升降平台 |
+
+`manifest.json` 记录每档的面数、字节数、包围盒与命名契约，前端可据此做预算校验。
+
+档位选择：`resolvePerfBudget()` 判定为低配（核数 < 4 或超宽画布）时加载 `_lite`，
+否则加载 `_hi`。
+
+## 命名契约
+
+| 前缀 | 含义 | 前端用途 |
 |---|---|---|
-| `warehouse.glb` | 24 × 8 × 16 | 冷链仓库主体：含库区、货架、冷库、月台、设备节点 |
-| `cold_box.glb` | 1.6 × 1.2 × 1.2 | 冷链箱：箱体、门、制冷机组、控制面板、传感器 |
-| `shelf.glb` | 2.4 × 2.8 × 1.0 | 三层货架 |
-| `vehicle.glb` | 8.2 × 3.1 × 2.4 | 冷藏货车：驾驶室、冷藏货箱、制冷机组、车轮 |
-| `equipment.glb` | 0.7 × 2.0 × 0.7 | 环境监测站：立杆、传感器头、太阳能板、控制箱 |
+| `Body_` | 状态着色层 | 按节点状态改写 emissive |
+| `Device_` | 可点击设备 | 设备级交互 |
+| `Anchor_` | 空锚点（Empty） | HTML 铭牌与节点定位 |
 
-## 业务层级命名（拆解依据）
+锚点命名：
 
-```
-warehouse.glb
-└── Warehouse
-    ├── Structure_Floor / Structure_Wall_* / Structure_Roof
-    ├── Dock_Platform / Dock_Door_01 / Dock_Door_02
-    ├── Zone_A
-    │   ├── Zone_A_Marking
-    │   ├── Shelf_A1 / Shelf_A2
-    │   └── ColdRoom_A
-    │       ├── ColdRoom_A_Wall_Back / _Left / _Right / _Ceiling / _Door
-    │       └── CoolingUnit_A / CoolingUnit_A_Fan
-    ├── Zone_B（结构同 Zone_A）
-    └── Device_SensorHub_01 / Device_SensorHub_02 / Device_TempProbe_ColdA / _ColdB
+- 楼栋：`Anchor_Building_01`、`Anchor_Building_02`、`Anchor_Ambient`
+- 货位：`Anchor_Slot_R{排:02d}C{列:02d}L{层}S{面}`，共 648 个
+- 货架：`Anchor_Rack_01..06`
+- 库房：`Anchor_ColdRoom`
 
-cold_box.glb
-└── ColdBox
-    ├── Body          ← 状态着色作用于此节点
-    ├── Door / Door_Handle
-    ├── CoolingUnit（Housing / Grille / Fan）
-    ├── ControlPanel（Face / LED_Temp / LED_Alarm / Screen）
-    ├── Sensor_Temperature / Sensor_Humidity
-    └── Foot_1 ~ Foot_4
-```
+前端从 `twin_nodes.transform.anchor` 读取锚点名，在加载后的 GLB 中按名称取世界坐标；
+锚点不存在时回退到 `transform.x / y / z`。
 
-前端 `ColdStorageScene` 会遍历模型，把名称以 `Device_` 开头的节点登记为可点击设备（拆解到设备层）。
+## 坐标约定
 
-## 替换为真实模型
+- Blender 导出开启 `export_yup=True`：Blender `+Y` 对应 Three.js `−Z`
+- GLB 内部坐标即 Three.js 世界坐标，模型原点位于场景中心
+- 园区地块 200 × 160m，冷库 72 × 48 × 12m，货架立柱 9m、跨 2.7m、单面进深 1.1m
 
-如需换成外部真实模型（如 Blender 导出的园区模型），保持同名同层级即可直接替换：
+## 模型根路径
 
-1. 格式 `.glb`，Y 轴朝上，单位为米
-2. 主体网格命名以 `Body` 开头（状态着色依赖此命名）
-3. 设备节点命名以 `Device_` 开头
-4. 建议 Blender 导出时开启 Draco 压缩
+通过环境变量 `VITE_3D_MODEL_BASE` 覆盖，默认 `/models`。
 
-模型根路径可通过环境变量 `VITE_3D_MODEL_BASE` 覆盖（默认 `/models`）。
+## 旧版演示模型（保留但大屏不再使用）
+
+`warehouse.glb`、`cold_box.glb`、`shelf.glb`、`vehicle.glb`、`equipment.glb`
+为早期 `ColdStorageScene` 的程序化演示模型；孪生舞台现在只使用上表的双档资产。
 
 ## 缺失时行为
 
-若某个模型文件缺失，场景会自动回退到程序化几何体，功能不受影响。
+模型文件缺失时，孪生舞台会保留节点铭牌与点击区域并打印加载错误，
+不会导致三维区域白屏。

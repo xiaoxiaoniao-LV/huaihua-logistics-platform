@@ -1,0 +1,234 @@
+{
+  "version": 1,
+  "units": "meter",
+  "up_axis": "Y",
+  "generated_at": "2026-11-18T11:11:38",
+  "naming": {
+    "Body_": "状态着色层（前端按业务状态改色）",
+    "Device_": "可点击设备节点",
+    "Anchor_": "空锚点，供 HTML 标签挂载",
+    "Slot_": "货位锚点（Anchor_Slot_RxxCxxLxSx）"
+  },
+  "assets": {
+    "park": {
+      "hi": {
+        "file": "park_hi.glb",
+        "triangles": 31448,
+        "bytes": 1609108,
+        "objects": 201,
+        "size": [
+          200.0,
+          160.0,
+          14.41
+        ],
+        "min": [
+          -100.0,
+          -80.0,
+          -0.3
+        ],
+        "max": [
+          100.0,
+          80.0,
+          14.11
+        ]
+      },
+      "lite": {
+        "file": "park_lite.glb",
+        "triangles": 7800,
+        "bytes": 416876,
+        "objects": 161,
+        "size": [
+          200.0,
+          160.0,
+          14.41
+        ],
+        "min": [
+          -100.0,
+          -80.0,
+          -0.3
+        ],
+        "max": [
+          100.0,
+          80.0,
+          14.11
+        ]
+      }
+    },
+    "coldroom": {
+      "hi": {
+        "file": "coldroom_hi.glb",
+        "triangles": 31816,
+        "bytes": 1790964,
+        "objects": 755,
+        "size": [
+          54.0,
+          41.4,
+          12.2
+        ],
+        "min": [
+          -27.0,
+          -22.4,
+          -0.2
+        ],
+        "max": [
+          27.0,
+          19.0,
+          12.0
+        ]
+      },
+      "lite": {
+        "file": "coldroom_lite.glb",
+        "triangles": 13032,
+        "bytes": 757176,
+        "objects": 749,
+        "size": [
+          54.0,
+          41.4,
+          12.2
+        ],
+        "min": [
+          -27.0,
+          -22.4,
+          -0.2
+        ],
+        "max": [
+          27.0,
+          19.0,
+          12.0
+        ]
+      }
+    },
+    "truck": {
+      "hi": {
+        "file": "truck_hi.glb",
+        "triangles": 4040,
+        "bytes": 181828,
+        "objects": 17,
+        "size": [
+          12.35,
+          3.1,
+          3.93
+        ],
+        "min": [
+          -5.21,
+          -1.55,
+          0.0
+        ],
+        "max": [
+          7.14,
+          1.55,
+          3.93
+        ]
+      },
+      "lite": {
+        "file": "truck_lite.glb",
+        "triangles": 980,
+        "bytes": 41384,
+        "objects": 17,
+        "size": [
+          12.35,
+          3.1,
+          3.93
+        ],
+        "min": [
+          -5.21,
+          -1.55,
+          0.0
+        ],
+        "max": [
+          7.14,
+          1.55,
+          3.93
+        ]
+      }
+    },
+    "coldbox": {
+      "hi": {
+        "file": "coldbox_hi.glb",
+        "triangles": 772,
+        "bytes": 50668,
+        "objects": 13,
+        "size": [
+          1.27,
+          1.07,
+          1.69
+        ],
+        "min": [
+          -0.635,
+          -0.535,
+          0.0
+        ],
+        "max": [
+          0.635,
+          0.535,
+          1.69
+        ]
+      },
+      "lite": {
+        "file": "coldbox_lite.glb",
+        "triangles": 300,
+        "bytes": 24144,
+        "objects": 13,
+        "size": [
+          1.27,
+          1.07,
+          1.69
+        ],
+        "min": [
+          -0.635,
+          -0.535,
+          0.0
+        ],
+        "max": [
+          0.635,
+          0.535,
+          1.69
+        ]
+      }
+    },
+    "dock": {
+      "hi": {
+        "file": "dock_hi.glb",
+        "triangles": 732,
+        "bytes": 44832,
+        "objects": 7,
+        "size": [
+          5.12,
+          3.45,
+          4.4
+        ],
+        "min": [
+          -2.56,
+          -3.4,
+          0.0
+        ],
+        "max": [
+          2.56,
+          0.05,
+          4.4
+        ]
+      },
+      "lite": {
+        "file": "dock_lite.glb",
+        "triangles": 240,
+        "bytes": 18248,
+        "objects": 7,
+        "size": [
+          5.12,
+          3.45,
+          4.4
+        ],
+        "min": [
+          -2.56,
+          -3.4,
+          0.0
+        ],
+        "max": [
+          2.56,
+          0.05,
+          4.4
+        ]
+      }
+    }
+  }
+}

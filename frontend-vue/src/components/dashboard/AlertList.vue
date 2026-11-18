@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useIoTStore } from '@/stores/iot'
+import { useTwinStore } from '@/stores/twin'
+import type { IoTAlert } from '@/api/iot'
 import { ALERT_LEVEL_CLASS, ALERT_LEVEL_LABEL } from '@/utils/labels'
 import { useNewItemFlash } from '@/composables/useNewItemFlash'
 
 const iot = useIoTStore()
+const twin = useTwinStore()
 
 const list = computed(() => iot.activeAlerts.slice(0, 8))
 const flashing = useNewItemFlash(() => iot.activeAlerts.map((a) => a.id))
 
 const levelText = (level: string) => ALERT_LEVEL_LABEL[level] || '提示'
 const levelClass = (level: string) => ALERT_LEVEL_CLASS[level] || 'alert-info'
+
+/** 点击告警 → 三维舞台定位到对应设备/货位 */
+function locate(alert: IoTAlert) {
+  if (alert.device_code) twin.focusDevice(alert.device_code)
+  else if (alert.resource_id) twin.focusResource(alert.resource_id)
+}
 </script>
 
 <template>
@@ -24,6 +33,8 @@ const levelClass = (level: string) => ALERT_LEVEL_CLASS[level] || 'alert-info'
           :key="a.id"
           class="alert-item"
           :class="[levelClass(a.level), { 'is-new': flashing.has(String(a.id)) }]"
+          title="点击在三维场景中定位"
+          @click="locate(a)"
         >
           <span class="tag" :class="`tag-${a.level === 'critical' ? 'red' : a.level === 'warn' ? 'orange' : 'blue'}`">
             {{ levelText(a.level) }}
@@ -46,8 +57,10 @@ const levelClass = (level: string) => ALERT_LEVEL_CLASS[level] || 'alert-info'
   border-left: 3px solid transparent;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-size: var(--fs-xs);
+  cursor: pointer;
   transition: background 0.2s;
 }
+.alert-item:hover { filter: brightness(1.18); }
 /* 严重：红底 + 呼吸脉冲，是最需要被看见的一级 */
 .alert-critical {
   background: rgba(255, 71, 87, 0.14);

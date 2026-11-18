@@ -11,7 +11,7 @@ const STATUS_RANK: Record<string, number> = {
 
 export const NODE_TYPE_LABEL: Record<string, string> = {
   site: '园区', zone: '库区', building: '库房', floor: '楼层',
-  room: '库房', rack: '货架', device: '设备',
+  room: '库房', rack: '货架', slot: '货位', device: '设备',
 }
 
 interface State {
@@ -20,6 +20,9 @@ interface State {
   selectedDevice: string | null
   deviceDetail: DeviceState | null
   deviceEvents: TwinEventRow[]
+  /** 左右栏联动：需要 3D 聚焦的节点 / 资源 */
+  highlightKey: string | null
+  focusResourceId: number | null
   loading: boolean
   error: string
   updatedAt: string
@@ -32,6 +35,8 @@ export const useTwinStore = defineStore('twin', {
     selectedDevice: null,
     deviceDetail: null,
     deviceEvents: [],
+    highlightKey: null,
+    focusResourceId: null,
     loading: false,
     error: '',
     updatedAt: '',
@@ -80,21 +85,29 @@ export const useTwinStore = defineStore('twin', {
     /** 快照刷新后按 node_key 重新指向新对象，避免 path 里持有旧快照 */
     _rebasePath() {
       if (!this.path.length || !this.snapshot) return
-      const flat = new Map(this.snapshot.flat.map((n) => [n.node_key, n]))
-      const next: TwinNode[] = []
-      let cursor: TwinNode[] = this.snapshot.tree
-      for (const old of this.path) {
-        const hit = cursor.find((n) => n.node_key === old.node_key)
-        if (!hit) break
-        next.push(hit)
-        cursor = hit.children
-        if (!flat.has(hit.node_key)) break
+      const last = this.path[this.path.length - 1]
+      const next = this._pathTo(last.node_key)
+      if (next.length) this.path = next
+    },
+
+    /** 从根节点到目标节点的完整祖先链（园区 → 库房 → 货位 → 设备） */
+    _pathTo(nodeKey: string): TwinNode[] {
+      if (!this.snapshot) return []
+      const dfs = (nodes: TwinNode[], trail: TwinNode[]): TwinNode[] | null => {
+        for (const node of nodes) {
+          const next = [...trail, node]
+          if (node.node_key === nodeKey) return next
+          const hit = dfs(node.children, next)
+          if (hit) return hit
+        }
+        return null
       }
-      this.path = next
+      return dfs(this.snapshot.tree, []) || []
     },
 
     drill(node: TwinNode) {
-      this.path = [...this.path, node]
+      const trail = this._pathTo(node.node_key)
+      this.path = trail.length ? trail : [...this.path, node]
     },
 
     upTo(index: number) {
@@ -106,6 +119,45 @@ export const useTwinStore = defineStore('twin', {
       this.selectedDevice = null
       this.deviceDetail = null
       this.deviceEvents = []
+      this.highlightKey = null
+      this.focusResourceId = null
+    },
+
+    /** 左栏资源点击：定位到该资源所在的货位并聚焦 */
+    focusResource(resourceId: number) {
+      this.focusResourceId = resourceId
+      if (!this.snapshot) return
+      const slot = this.snapshot.flat.find(
+        (n) => n.node_type === 'slot' && Number((n.transform as any)?.resource_id) === resourceId,
+      )
+      if (!slot) return
+      const trail = this._pathTo(slot.node_key)
+      if (trail.length < 2) return
+      this.path = trail.slice(0, -1)
+      this.highlightKey = slot.node_key
+      const device = this.snapshot.flat.find(
+        (n) => n.parent_id === slot.id && n.node_type === 'device',
+      )
+      const code = device?.bindings[0]?.device_code
+      if (code) this.selectDevice(code)
+    },
+
+    /** 右栏告警点击：定位到该设备所属货位 */
+    focusDevice(code: string) {
+      if (!this.snapshot) return
+      const device = this.snapshot.flat.find(
+        (n) => n.node_type === 'device' && n.bindings.some((b) => b.device_code === code),
+      )
+      if (!device) return
+      const slot = this.snapshot.flat.find((n) => n.id === device.parent_id)
+      if (slot) {
+        const trail = this._pathTo(slot.node_key)
+        if (trail.length >= 2) {
+          this.path = trail.slice(0, -1)
+          this.highlightKey = slot.node_key
+        }
+      }
+      this.selectDevice(code)
     },
 
     async selectDevice(code: string | null) {
@@ -209,15 +261,15 @@ export const useTwinStore = defineStore('twin', {
         return worst
       }
 
+      // unknown 不参与「最坏值」比较：全为 unknown 时才回落为 unknown
       const resolve = (node: TwinNode): string => {
-        const states = [ownStatus(node), ...node.children.map(resolve)]
-        let worst = 'unknown'
-        for (const s of states) {
-          if (s === 'unknown' && worst === 'unknown') continue
-          if (STATUS_RANK[s] > STATUS_RANK[worst]) worst = s
+        let worst: string | null = null
+        for (const s of [ownStatus(node), ...node.children.map(resolve)]) {
+          if (s === 'unknown') continue
+          if (worst === null || STATUS_RANK[s] > STATUS_RANK[worst]) worst = s
         }
-        node.status = worst
-        return worst
+        node.status = worst ?? 'unknown'
+        return node.status
       }
       this.snapshot.tree.forEach(resolve)
 

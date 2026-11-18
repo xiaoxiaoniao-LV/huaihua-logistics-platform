@@ -1,7 +1,9 @@
 <script setup lang="ts">
-/** 中央孪生舞台：四级下钻 + 实时状态铭牌 + 设备点位面板。 */
+/** 中央孪生舞台：园区 → 货位 → 设备三级下钻 + 真实 GLB + 左右栏双向联动。 */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { TwinLevelScene, type TwinNodeLite, TWIN_STATUS_TEXT } from '@/core/TwinLevelScene'
+import {
+  TwinLevelScene, type TwinNodeLite, type TwinStageKind, TWIN_STATUS_TEXT,
+} from '@/core/TwinLevelScene'
 import { useTwinStore } from '@/stores/twin'
 import DevicePointPanel from '@/components/twin/DevicePointPanel.vue'
 import type { TwinNode } from '@/api/twin'
@@ -9,13 +11,43 @@ import type { TwinNode } from '@/api/twin'
 const twin = useTwinStore()
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const wrapRef = ref<HTMLElement | null>(null)
+const loadingModel = ref(false)
+const isFullscreen = ref(false)
 
 let scene: TwinLevelScene | null = null
 let pollTimer: number | null = null
-let currentKeys = ''
+let currentSig = ''
+let syncChain: Promise<void> = Promise.resolve()
 
-const levelNodes = computed(() => twin.currentNodes)
+/** 园区根节点只有一个 site 时，直接展开成楼栋，少点一次 */
+const levelNodes = computed<TwinNode[]>(() => {
+  const nodes = twin.currentNodes
+  const first = nodes[0]
+  if (
+    !twin.breadcrumb.length &&
+    nodes.length === 1 &&
+    first?.node_type === 'site' &&
+    first.children.length
+  ) {
+    return first.children
+  }
+  return nodes
+})
+
 const breadcrumb = computed(() => twin.breadcrumb)
+/** 面包屑不重复显示园区根节点 */
+const crumbPath = computed(() =>
+  breadcrumb.value
+    .map((node, index) => ({ node, index }))
+    .filter((item) => item.node.node_type !== 'site'),
+)
+
+const stageKind = computed<TwinStageKind>(() => {
+  const last = breadcrumb.value[breadcrumb.value.length - 1]
+  if (!last || last.node_type === 'site') return 'park'
+  return 'coldroom'
+})
+
 const summary = computed(() => twin.summary)
 const legend = [
   { key: 'online', label: '在线' },
@@ -31,12 +63,24 @@ const summaryItems = computed(() =>
     .filter((l) => l.count > 0 || l.key === 'online' || l.key === 'alarm'),
 )
 
+const stripNodes = computed(() => levelNodes.value.slice(0, 30))
+const stripHidden = computed(() => Math.max(0, levelNodes.value.length - stripNodes.value.length))
+
+const tipText = computed(() => {
+  if (stageKind.value === 'park') return '单击冷库进入库内 · 双击聚焦 · 拖拽旋转 · 滚轮缩放'
+  const last = breadcrumb.value[breadcrumb.value.length - 1]
+  if (last?.node_type === 'slot') return '点击设备查看点位 · Esc 返回货位层'
+  return '单击货位查看设备 · 双击聚焦 · Esc 返回'
+})
+
 function toLite(node: TwinNode): TwinNodeLite {
   return {
     node_key: node.node_key,
     name: node.name,
     node_type: node.node_type,
     status: node.status,
+    model_ref: node.model_ref ?? null,
+    transform: node.transform ?? null,
     children: node.children.map(toLite),
     bindings: node.bindings.map((b) => ({
       point_key: b.point_key,
@@ -49,22 +93,43 @@ function toLite(node: TwinNode): TwinNodeLite {
   }
 }
 
+function selectedKey(): string | null {
+  const highlight = twin.highlightKey
+  if (highlight && levelNodes.value.some((n) => n.node_key === highlight)) return highlight
+  const code = twin.selectedDevice
+  if (!code) return null
+  const hit = levelNodes.value.find((n) => n.bindings.some((b) => b.device_code === code))
+  return hit?.node_key || null
+}
+
+/** 串行执行场景同步，避免模型加载期间多次下钻互相覆盖 */
 function syncScene() {
+  syncChain = syncChain.then(runSync).catch(() => {})
+  return syncChain
+}
+
+async function runSync() {
   if (!scene) return
+  const kind = stageKind.value
   const nodes = levelNodes.value.map(toLite)
-  const keys = nodes.map((n) => n.node_key).join('|')
-  if (keys !== currentKeys) {
-    scene.setNodes(nodes)
-    currentKeys = keys
+  const sig = `${kind}|${nodes.map((n) => n.node_key).join(',')}`
+
+  if (sig !== currentSig) {
+    currentSig = sig
+    loadingModel.value = true
+    await scene.setStage(kind, nodes)
+    loadingModel.value = false
+
+    // 下钻到货位后，直接把相机推到设备上，避免还停在整库视角
+    const last = breadcrumb.value[breadcrumb.value.length - 1]
+    if (last?.node_type === 'slot') {
+      const device = levelNodes.value[0]
+      if (device) scene.focusNode(device.node_key)
+    }
   } else {
     scene.updateValues(nodes)
   }
-  scene.setSelected(twin.selectedDevice ? findNodeKeyByDevice(twin.selectedDevice) : null)
-}
-
-function findNodeKeyByDevice(code: string) {
-  const hit = levelNodes.value.find((n) => n.bindings.some((b) => b.device_code === code))
-  return hit?.node_key || null
+  scene.setSelected(selectedKey())
 }
 
 function onPick(nodeKey: string | null) {
@@ -92,34 +157,75 @@ function goPath(index: number) {
   twin.upTo(index + 1)
 }
 
+function goUp() {
+  if (!breadcrumb.value.length) return
+  twin.upTo(breadcrumb.value.length - 1)
+}
+
 async function refresh() {
   await twin.fetchSnapshot()
 }
 
+async function toggleFullscreen() {
+  const el = (wrapRef.value?.parentElement || wrapRef.value) as HTMLElement | null
+  if (!document.fullscreenElement) await el?.requestFullscreen?.()
+  else await document.exitFullscreen()
+}
+
+function resetView() {
+  scene?.resetView()
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = !!document.fullscreenElement
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') goUp()
+}
+
 watch(levelNodes, () => nextTick(syncScene), { deep: true })
+
+watch(
+  () => twin.highlightKey,
+  async (key) => {
+    if (!key) return
+    await nextTick()
+    await syncScene()
+    if (levelNodes.value.some((n) => n.node_key === key)) {
+      scene?.setSelected(key)
+      scene?.focusNode(key)
+    }
+  },
+)
+
 watch(
   () => twin.selectedDevice,
-  (code) => {
-    scene?.setSelected(code ? findNodeKeyByDevice(code) : null)
-  },
+  () => scene?.setSelected(selectedKey()),
 )
 
 onMounted(async () => {
   if (!twin.snapshot) await twin.fetchSnapshot()
   await nextTick()
   if (!canvasRef.value) return
+
   scene = new TwinLevelScene(canvasRef.value)
   scene.init()
   scene.setPickCallback(onPick)
-  syncScene()
+  await syncScene()
+
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('keydown', onKeydown)
 
   pollTimer = window.setInterval(() => {
     twin.fetchSnapshot()
-  }, 20000) as unknown as number
+  }, 10000) as unknown as number
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  window.removeEventListener('keydown', onKeydown)
   scene?.dispose()
   scene = null
 })
@@ -131,24 +237,29 @@ onUnmounted(() => {
     <div class="stage-head">
       <nav class="crumbs">
         <button class="crumb" :class="{ active: !breadcrumb.length }" @click="goRoot">园区总览</button>
-        <template v-for="(node, i) in breadcrumb" :key="node.node_key">
+        <template v-for="item in crumbPath" :key="item.node.node_key">
           <span class="arrow">›</span>
           <button
             class="crumb"
-            :class="{ active: i === breadcrumb.length - 1 }"
-            @click="goPath(i)"
+            :class="{ active: item.index === breadcrumb.length - 1 }"
+            @click="goPath(item.index)"
           >
-            {{ node.name }}
+            {{ item.node.name }}
           </button>
         </template>
       </nav>
 
       <div class="head-right">
+        <span v-if="loadingModel" class="loading-chip">模型加载中</span>
         <div class="chips">
           <span v-for="item in summaryItems" :key="item.key" class="chip" :class="item.key">
             <i />{{ item.label }} {{ item.count }}
           </span>
         </div>
+        <button class="tool" title="复位视角" @click="resetView">⟲</button>
+        <button class="tool" :title="isFullscreen ? '退出全屏' : '全屏'" @click="toggleFullscreen">
+          {{ isFullscreen ? '⤢' : '⛶' }}
+        </button>
         <button class="refresh" :class="{ spinning: twin.loading }" title="刷新孪生数据" @click="refresh">
           ⟳
         </button>
@@ -156,6 +267,9 @@ onUnmounted(() => {
     </div>
 
     <canvas ref="canvasRef" class="stage-canvas" />
+
+    <!-- 操作提示 -->
+    <div class="stage-tip">{{ tipText }}</div>
 
     <!-- 图例 -->
     <div class="legend">
@@ -167,7 +281,7 @@ onUnmounted(() => {
     <!-- 当前层级节点列表：三维看不清时可直接点选 -->
     <div class="node-strip">
       <button
-        v-for="node in levelNodes"
+        v-for="node in stripNodes"
         :key="node.node_key"
         class="node-pill"
         :class="[node.status, { selected: twin.deviceDetail && node.bindings.some((b) => b.device_code === twin.selectedDevice) }]"
@@ -179,6 +293,7 @@ onUnmounted(() => {
           <template v-if="node.children.length"> · {{ node.children.length }} 下级</template>
         </span>
       </button>
+      <span v-if="stripHidden" class="empty-hint">还有 {{ stripHidden }} 个，请在三维场景中点选</span>
       <span v-if="!levelNodes.length" class="empty-hint">本级暂无孪生节点</span>
     </div>
 
@@ -254,6 +369,27 @@ i.unknown { background: var(--status-pending); }
 .refresh:hover { background: var(--bg-card-hover); }
 .refresh.spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.tool {
+  border: 1px solid var(--border-soft); background: var(--bg-card-soft);
+  color: var(--text-secondary); width: 26px; height: 26px; border-radius: var(--radius-md);
+  cursor: pointer; font-size: 13px; line-height: 1;
+}
+.tool:hover { color: var(--accent-cyan); border-color: var(--border-glow); background: var(--bg-card-hover); }
+
+.loading-chip {
+  font-size: var(--fs-xs); color: var(--accent-cyan);
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(0, 229, 255, 0.08); border: 1px solid var(--border-glow);
+}
+
+.stage-tip {
+  position: absolute; left: 14px; top: 48px;
+  font-size: var(--fs-xs); color: var(--text-muted);
+  padding: 3px 8px; border-radius: var(--radius-sm);
+  background: rgba(4, 16, 34, 0.55); border: 1px solid var(--border-soft);
+  pointer-events: none; z-index: 3;
+}
 
 .legend {
   position: absolute; left: 14px; bottom: 74px;

@@ -23,6 +23,8 @@ export interface TwinNode {
   node_type: string
   parent_id: number | null
   space_id: number | null
+  model_ref?: string | null
+  transform?: Record<string, any> | null
   status: string
   bindings: TwinBinding[]
   children: TwinNode[]

@@ -889,6 +889,8 @@ export class TwinLevelScene {
   private onClick = (event: MouseEvent) => {
     // 拖动旋转后松手会补发 click，位移超过阈值直接丢弃，避免误触下钻
     if (Math.hypot(event.clientX - this.downX, event.clientY - this.downY) > 6) return
+    // 双击的第二下不再当作单击，避免下钻后误选到下一层节点
+    if (event.detail > 1) return
     if (this.interactionMode === 'browse') return
     this.onPick?.(this.pickAt(event))
   }

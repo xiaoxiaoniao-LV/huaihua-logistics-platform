@@ -170,7 +170,10 @@ async function runSync() {
 
 function onPick(nodeKey: string | null) {
   if (!nodeKey) {
+    // 点空白处完整取消选中，避免 3D 已取消但右栏设备面板还留着
     scene?.setSelected(null)
+    twin.highlightKey = null
+    twin.selectDevice(null)
     return
   }
   const node = levelNodes.value.find((n) => n.node_key === nodeKey)
@@ -224,10 +227,25 @@ function onFullscreenChange() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') goUp()
+  if (e.key !== 'Escape') return
+  // 在编号搜索框里按 Esc 只退出输入，不返回上一级
+  const tag = (e.target as HTMLElement | null)?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    ;(e.target as HTMLElement).blur()
+    return
+  }
+  goUp()
 }
 
 watch(levelNodes, () => nextTick(syncScene), { deep: true })
+
+// 切换库房/层级时清空编号搜索，避免上一层的筛选词把列表筛空
+watch(
+  () => twin.path[twin.path.length - 1]?.node_key,
+  () => {
+    slotQuery.value = ''
+  },
+)
 
 watch(
   () => twin.highlightKey,
@@ -362,7 +380,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 当前层级节点列表：三维看不清时可直接点选 -->
-    <div class="node-strip">
+    <div class="node-strip" :class="{ 'with-side': twin.selectedDevice }">
       <button
         v-for="node in stripNodes"
         :key="node.node_key"
@@ -554,12 +572,13 @@ i.unknown { background: var(--status-pending); }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-secondary); }
 
 .node-strip {
-  position: absolute; left: 12px; right: 336px; bottom: 12px;
+  position: absolute; left: 12px; right: 12px; bottom: 12px;
   display: flex; gap: 6px; overflow-x: auto; padding: 6px;
   border-radius: var(--radius-lg); background: var(--bg-card-soft);
   border: 1px solid var(--border-soft);
   z-index: 3;
 }
+.node-strip.with-side { right: 336px; }
 .node-strip::-webkit-scrollbar { height: 4px; }
 .node-strip::-webkit-scrollbar-thumb { background: var(--border-glow); border-radius: 2px; }
 

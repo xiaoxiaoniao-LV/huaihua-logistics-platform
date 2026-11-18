@@ -18,7 +18,11 @@ API_BASE = os.environ.get("API_BASE", "http://localhost:8080").rstrip("/")
 DEVICE_TOKEN = os.environ.get("DEVICE_TOKEN", "")
 INTERVAL = float(os.environ.get("PUBLISH_INTERVAL", "3"))
 
-DEVICE_CODES = ["CW-01", "CW-02", "CW-03", "CW-04"]
+DEVICE_CODES = [
+    c.strip()
+    for c in os.environ.get("DEVICE_CODES", "").split(",")
+    if c.strip()
+] or [f"CW-{i:02d}" for i in range(1, 37)]
 versions = {
     code: os.environ.get("FIRMWARE_VERSION", "1.0.0") for code in DEVICE_CODES
 }
@@ -77,23 +81,26 @@ print(f"[simulator] connected to {MQTT_HOST}:{MQTT_PORT}")
 cli.loop_start()
 
 base = {
-    "CW-01": {"temp": -18.0, "hum": 65.0},
-    "CW-02": {"temp": -18.0, "hum": 65.0},
-    "CW-03": {"temp": -18.0, "hum": 65.0},
-    "CW-04": {"temp": -18.0, "hum": 65.0},
+    code: {
+        "temp": round(-18.0 + ((idx % 5) - 2) * 0.4, 1),
+        "hum": round(62.0 + (idx % 7) * 2.0, 1),
+    }
+    for idx, code in enumerate(DEVICE_CODES)
 }
 
 i = 0
 try:
     while True:
+        hot = []
         for code in DEVICE_CODES:
             b = base[code]
-            # 每 50 条随机制造一次异常（高温告警）
-            if i > 0 and i % 50 == 0 and random.random() < 0.5:
-                t = round(random.uniform(-2, 4), 1)  # 越温区
+            # 千分之二概率制造一次越温，用于演示告警
+            if random.random() < 0.002:
+                t = round(random.uniform(-2, 4), 1)
+                hot.append(code)
             else:
-                t = round(b["temp"] + random.uniform(-1.2, 1.2), 1)
-            h = round(b["hum"] + random.uniform(-6, 6), 1)
+                t = round(b["temp"] + random.uniform(-0.8, 0.8), 1)
+            h = round(b["hum"] + random.uniform(-4, 4), 1)
             payload = {
                 "device_code": code,
                 "temperature": t,
@@ -102,10 +109,12 @@ try:
                 "latitude": 27.5 + random.random(),
                 "firmware_version": versions[code],
             }
-            topic = f"iot/{code}/data"
-            cli.publish(topic, json.dumps(payload))
-            print(f"  [{time.strftime('%H:%M:%S')}] {topic} → {t}℃ / {h}%RH")
+            cli.publish(f"iot/{code}/data", json.dumps(payload))
         i += 1
+        print(
+            f"  [{time.strftime('%H:%M:%S')}] 上报 {len(DEVICE_CODES)} 台设备"
+            + (f"，越温 {','.join(hot)}" if hot else "")
+        )
         time.sleep(INTERVAL)
 except KeyboardInterrupt:
     print("\n[simulator] stopped")

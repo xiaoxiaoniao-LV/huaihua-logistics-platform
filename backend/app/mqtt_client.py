@@ -27,6 +27,7 @@ def _on_message(_cli, _userdata, msg):
 
     # 入库（用自己的 Session，因为在独立线程）
     resource_id = 0
+    twin_points: dict[str, float] = {}
     try:
         from .database import SessionLocal
         db = SessionLocal()
@@ -52,11 +53,45 @@ def _on_message(_cli, _userdata, msg):
                 latitude=payload.get("latitude"),
             )
             db.add(row)
+
+            # 同步写窄表遥测，让数字孪生绑定的点位有实时值
+            if payload.get("temperature") is not None:
+                twin_points["temp_in"] = float(payload["temperature"])
+            if payload.get("humidity") is not None:
+                twin_points["hum_in"] = float(payload["humidity"])
+            if twin_points:
+                from .schemas.telemetry import TelemetryEnvelope
+                from .services import telemetry as telemetry_service
+
+                telemetry_service.ingest_envelope(
+                    db,
+                    TelemetryEnvelope(
+                        device_code=device_code,
+                        quality="good",
+                        firmware_version=version,
+                        points=twin_points,
+                    ),
+                )
             db.commit()
         finally:
             db.close()
     except Exception as e:
         print(f"[mqtt] db error: {e}")
+
+    # 窄表遥测 WS 推送：孪生舞台按点位增量刷新，不必等 20s 轮询
+    if twin_points:
+        try:
+            hub.publish({
+                "type": "telemetry",
+                "device_code": device_code,
+                "status": "online",
+                "quality": "good",
+                "last_seen_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "points": {k: {"value_num": v} for k, v in twin_points.items()},
+            })
+        except Exception as e:
+            print(f"[mqtt] ws telemetry error: {e}")
+
 
     # Redis 最新值缓存（与 HTTP 接口保持一致）
     try:

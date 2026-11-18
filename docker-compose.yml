@@ -156,9 +156,12 @@ services:
       backend:
         condition: service_healthy
     environment:
+      MQTT_HOST: emqx
+      MQTT_PORT: 1883
       API_BASE: http://backend:8000
       DEVICE_TOKEN: ${DEVICE_INGEST_TOKEN:-}
       DEVICE_CODE: SIM-DEMO-01
+      PUBLISH_INTERVAL: ${PUBLISH_INTERVAL:-5}
       INTERVAL: ${PUBLISH_INTERVAL:-5}
       TZ: Asia/Shanghai
 

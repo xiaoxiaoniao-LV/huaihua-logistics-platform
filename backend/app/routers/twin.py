@@ -81,17 +81,19 @@ def _node_status(bindings: list[dict]) -> str:
 
 
 def _rollup_status(items: dict[int, dict]) -> None:
-    """容器节点（库区/库房）继承子节点的最坏状态，让大屏自上而下都能看出异常。"""
+    """容器节点（库区/库房）继承子节点的最坏状态，让大屏自上而下都能看出异常。
+
+    `unknown` 视为「无数据」，不参与最坏值比较：只有当自身与所有子节点都无数据时，
+    容器才保持 unknown，避免个别未接入子节点把整个园区判成待接入。
+    """
     def resolve(node: dict) -> str:
-        states = [node["status"]] + [resolve(child) for child in node["children"]]
-        worst = "unknown"
-        found = False
-        for state in states:
-            if state == "unknown" and not found:
+        worst: str | None = None
+        for state in [node["status"]] + [resolve(child) for child in node["children"]]:
+            if state == "unknown":
                 continue
-            if not found or _STATUS_RANK.get(state, 1) > _STATUS_RANK.get(worst, 0):
-                worst, found = state, True
-        node["status"] = worst if found else "unknown"
+            if worst is None or _STATUS_RANK.get(state, 1) > _STATUS_RANK.get(worst, 0):
+                worst = state
+        node["status"] = worst or "unknown"
         return node["status"]
 
     for item in items.values():

@@ -1,7 +1,10 @@
 """L2 冷库内部：地面、围护、6 排双面货架、层板、灯带、冷风机、货位锚点。
 
-真实尺度：库房 54×38×12m；立柱高 9m，横梁跨 2.7m（3 个欧标托盘），
-单面进深 1.1m，通道 3.8m。货位锚点命名 Anchor_Slot_R{排}C{列}L{层}S{面}。
+真实尺度（欧标托盘 1200×800 横梁式货架 + 冷库通行规范）：
+- 库房 54×38×12m，货架总长 48.6m（18 跨 × 2.7m，每跨并排 2 个托盘）
+- 6 排背靠背双面货架，排间通道 3.4m（前移式叉车作业 3.0~3.5m）
+- 4 层横梁 1.5 / 3.6 / 5.7 / 7.8m，立柱高 8.8m，单面进深 1.1m
+- 货位锚点 Anchor_Slot_R{排}C{列}L{层}S{面}，排端编号牌 Anchor_RowSign_R{排}
 """
 
 import math
@@ -12,11 +15,12 @@ from bl_common import Part, add_empty, bevel, palette
 import build_props
 
 ROOM = (54.0, 38.0, 12.0)
-ROWS = [-15.0, -9.0, -3.0, 3.0, 9.0, 15.0]
+# 排距 5.6m：双面货架进深 2.2m（单面 1.1m），留出 3.4m 叉车通道
+ROWS = [-14.0, -8.4, -2.8, 2.8, 8.4, 14.0]
 COLS = 18
 BAY = 2.7
-LEVELS = [1.5, 4.0, 6.5]
-RACK_H = 9.0
+LEVELS = [1.5, 3.6, 5.7, 7.8]
+RACK_H = 8.8
 SIDE_OFF = 0.55
 RACK_LEN = COLS * BAY
 
@@ -72,7 +76,7 @@ def _shell(lod):
     # 地面通道标线
     lines = Part("Shell_FloorLines", P["yellow"])
     for ry in ROWS:
-        lines.box((RACK_LEN + 4.0, 0.14, 0.02), (0, ry + 2.9, 0.01))
+        lines.box((RACK_LEN + 4.0, 0.14, 0.02), (0, ry + 2.8, 0.01))
     lines.box((0.16, D - 4.0, 0.02), (-W / 2 + 2.2, 0, 0.01))
     lines.box((0.16, D - 4.0, 0.02), (W / 2 - 2.2, 0, 0.01))
     objs.append(lines.build())
@@ -95,7 +99,7 @@ def _rack(row_index, row_y, lod):
         x = x0 + i * BAY
         for sy in (-1, 1):
             frames.box((0.10, 0.09, RACK_H), (x, row_y + sy * SIDE_OFF, RACK_H / 2))
-        for tz in (0.45, 4.25, 8.55):
+        for tz in (0.45, 4.25, 8.45):
             ties.box((0.06, 1.10, 0.06), (x, row_y, tz))
         # 底部调节脚
         for sy in (-1, 1):
@@ -112,6 +116,14 @@ def _rack(row_index, row_y, lod):
     objs.append(beams.build())
     if lod == "hi":
         objs.append(decks.build())
+        # 每跨中间加一道分隔，明示 2 个 1200×800 托盘位
+        dividers = Part(f"Rack_{row_index:02d}_Dividers", P["galv"])
+        for ci in range(COLS):
+            dx = x0 + (ci + 0.5) * BAY
+            for lv in LEVELS:
+                for sy in (-1, 1):
+                    dividers.box((0.05, 0.98, 0.16), (dx, row_y + sy * SIDE_OFF, lv + 0.17))
+        objs.append(dividers.build())
 
     # 货位锚点：每跨每层每面
     for ci in range(COLS):
@@ -127,6 +139,25 @@ def _rack(row_index, row_y, lod):
 
     objs.append(add_empty(f"Anchor_Rack_{row_index:02d}", (0, row_y, RACK_H + 1.2)))
     return objs
+
+
+# ---------------------------------------------------------------- 排端编号牌
+def _row_sign(row_index, row_y):
+    """货架端头编号牌：黄底黑框，深浅两套 LOD 共用，前端按锚点挂 01~06 排 HTML 标牌。"""
+    P = palette()
+    x = RACK_LEN / 2 + 1.35
+    frame = Part(f"RowSign_{row_index:02d}_Frame", P["steel_dark"])
+    plate = Part(f"RowSign_{row_index:02d}_Plate", P["yellow"])
+    post = Part(f"RowSign_{row_index:02d}_Post", P["galv"])
+    frame.box((0.07, 0.94, 0.98), (x, row_y, 2.72))
+    plate.box((0.03, 0.78, 0.82), (x + 0.05, row_y, 2.72))
+    post.box((0.08, 0.08, 2.23), (x, row_y, 1.115))
+    return [
+        frame.build(),
+        plate.build(),
+        post.build(),
+        add_empty(f"Anchor_RowSign_R{row_index:02d}", (x + 0.2, row_y, 2.72)),
+    ]
 
 
 # ---------------------------------------------------------------- 设备与陈设
@@ -149,9 +180,9 @@ def _equipment(lod):
     objs.append(fans.build(smooth=True))
     objs.append(grille.build())
 
-    # 顶部灯带
+    # 顶部灯带：沿排间通道布置
     lights = Part("Device_CeilingLights", P["warm"])
-    for ly in (-12.0, -6.0, 0.0, 6.0, 12.0):
+    for ly in (-11.2, -5.6, 0.0, 5.6, 11.2):
         lights.box((RACK_LEN + 2.0, 0.22, 0.10), (0, ly, ROOM[2] - 1.15))
     objs.append(lights.build())
 
@@ -161,9 +192,9 @@ def _equipment(lod):
         sensors.box((0.22, 0.18, 0.12), (sx, ROOM[1] / 2 - 0.36, 5.4))
     objs.append(sensors.build())
 
-    # 前场作业区：几箱待入库
+    # 前场作业区：几箱待入库（放在前排通道内，避免与货架穿插）
     for i, (px, py, yaw) in enumerate(
-        [(-20.0, -16.0, 0.0), (-18.6, -14.4, 0.0), (18.0, -16.2, 90.0), (19.6, -14.6, 90.0)]
+        [(-21.4, -17.0, 0.0), (-19.9, -15.9, 0.0), (20.4, -17.0, 90.0), (21.9, -15.9, 90.0)]
     ):
         objs.extend(build_props.coldbox(f"Stage{i + 1:02d}", (px, py, 0.0), yaw, lod))
 
@@ -181,6 +212,7 @@ def build(lod="hi"):
     objs.extend(_shell(lod))
     for i, ry in enumerate(ROWS, start=1):
         objs.extend(_rack(i, ry, lod))
+        objs.extend(_row_sign(i, ry))
     objs.extend(_equipment(lod))
 
     if lod == "hi":

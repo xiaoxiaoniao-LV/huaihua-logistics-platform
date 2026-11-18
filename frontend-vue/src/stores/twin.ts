@@ -130,7 +130,17 @@ export const useTwinStore = defineStore('twin', {
       const slot = this.snapshot.flat.find(
         (n) => n.node_type === 'slot' && Number((n.transform as any)?.resource_id) === resourceId,
       )
-      if (!slot) return
+      if (slot) this._focusSlot(slot)
+    },
+
+    /** 三维场景点选货位：与资源列表点击走同一路径（停在库房层，高亮货位 + 带出设备） */
+    focusSlot(node: TwinNode) {
+      this.focusResourceId = Number((node.transform as any)?.resource_id) || null
+      this._focusSlot(node)
+    },
+
+    _focusSlot(slot: Omit<TwinNode, 'children'>) {
+      if (!this.snapshot) return
       const trail = this._pathTo(slot.node_key)
       if (trail.length < 2) return
       this.path = trail.slice(0, -1)
@@ -138,8 +148,7 @@ export const useTwinStore = defineStore('twin', {
       const device = this.snapshot.flat.find(
         (n) => n.parent_id === slot.id && n.node_type === 'device',
       )
-      const code = device?.bindings[0]?.device_code
-      if (code) this.selectDevice(code)
+      this.selectDevice(device?.bindings[0]?.device_code ?? null)
     },
 
     /** 右栏告警点击：定位到该设备所属货位 */

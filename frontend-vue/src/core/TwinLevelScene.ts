@@ -19,6 +19,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { MODEL_BASE, PERF_BUDGET, SCENE_COLOR, resolvePerfBudget } from '@/config/scene'
 import { hexToNumber, theme } from '@/config/theme'
+import { slotCode } from '@/utils/labels'
 
 export interface TwinBindingLite {
   point_key: string
@@ -116,6 +117,11 @@ export class TwinLevelScene {
   private budget = resolvePerfBudget()
   private lod: 'hi' | 'lite' = resolvePerfBudget().pixelRatio < 2 ? 'lite' : 'hi'
   private selectedBeam: THREE.Mesh | null = null
+  // 浏览模式：单击不下钻，只保留拖拽/缩放/双击聚焦，避免误触
+  private interactionMode: 'browse' | 'operate' = 'browse'
+  private downX = 0
+  private downY = 0
+  private rowSignLabels: CSS2DObject[] = []
 
   // 真实模型
   private stageKind: TwinStageKind | null = null
@@ -360,6 +366,7 @@ export class TwinLevelScene {
   }
 
   private installStage(root: THREE.Group, kind: TwinStageKind) {
+    this.clearRowSigns()
     if (this.stageRoot) this.scene.remove(this.stageRoot)
     this.stageRoot = root
     this.stageKind = kind
@@ -371,6 +378,7 @@ export class TwinLevelScene {
       if (!obj.name.startsWith('Anchor_')) return
       this.anchors.set(obj.name, new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld))
     })
+    this.buildRowSigns(kind)
 
     const box = new THREE.Box3().setFromObject(root)
     const size = box.getSize(new THREE.Vector3())
@@ -407,6 +415,40 @@ export class TwinLevelScene {
     // 园区地面比库房大得多，按场景调整网格可见范围
     const grid = this.scene.getObjectByName('twin-grid')
     if (grid) grid.visible = kind === 'park'
+  }
+
+  /** 排端编号牌：冷库场景常显，随 GLB 里的 Anchor_RowSign_Rxx 定位 */
+  private buildRowSigns(kind: TwinStageKind) {
+    this.clearRowSigns()
+    if (kind !== 'coldroom' || !this.stageRoot) return
+    this.anchors.forEach((pos, name) => {
+      const m = /^Anchor_RowSign_R(\d{2})$/.exec(name)
+      if (!m) return
+      const el = document.createElement('div')
+      el.className = 'twin-row-sign'
+      el.textContent = `${m[1]} 排`
+      el.style.cssText = [
+        'padding:2px 9px', 'border-radius:4px',
+        'background:rgba(255,196,0,.92)', 'color:#1a1200',
+        'font-size:12px', 'font-weight:700', 'letter-spacing:1px',
+        'font-variant-numeric:tabular-nums',
+        'border:1px solid rgba(0,0,0,.35)',
+        'box-shadow:0 0 12px rgba(255,196,0,.35)',
+        'pointer-events:none', 'white-space:nowrap',
+      ].join(';')
+      const label = new CSS2DObject(el)
+      label.position.copy(pos)
+      this.stageRoot!.add(label)
+      this.rowSignLabels.push(label)
+    })
+  }
+
+  private clearRowSigns() {
+    this.rowSignLabels.forEach((label) => {
+      ;(label.element as HTMLElement).remove()
+      label.parent?.remove(label)
+    })
+    this.rowSignLabels = []
   }
 
   // ===================== 场景 =====================
@@ -710,7 +752,10 @@ export class TwinLevelScene {
 
     const meta = document.createElement('div')
     const badge = TWIN_STATUS_TEXT[node.status] || node.status
-    meta.textContent = `${NODE_TYPE_LABEL[node.node_type] || node.node_type} · ${badge}`
+    const code = node.node_type === 'slot' ? slotCode(node.transform?.anchor as string) : ''
+    meta.textContent = code
+      ? `货位 ${code} · ${badge}`
+      : `${NODE_TYPE_LABEL[node.node_type] || node.node_type} · ${badge}`
     meta.style.cssText = `font-size:10px;color:${hex};margin-top:2px;letter-spacing:.4px`
     el.appendChild(meta)
 
@@ -801,6 +846,7 @@ export class TwinLevelScene {
   // ===================== 交互 =====================
 
   private bindEvents() {
+    this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('click', this.onClick)
     this.canvas.addEventListener('dblclick', this.onDblClick)
     this.canvas.addEventListener('pointermove', this.onPointerMove)
@@ -810,6 +856,7 @@ export class TwinLevelScene {
   }
 
   private unbindEvents() {
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('click', this.onClick)
     this.canvas.removeEventListener('dblclick', this.onDblClick)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
@@ -828,11 +875,26 @@ export class TwinLevelScene {
     return (hits[0].object.userData.node_key as string) ?? null
   }
 
+  /** 浏览模式单击不触发下钻；操作模式才响应单击选点 */
+  setInteractionMode(mode: 'browse' | 'operate') {
+    this.interactionMode = mode
+    this.canvas.style.cursor = 'grab'
+  }
+
+  private onPointerDown = (event: PointerEvent) => {
+    this.downX = event.clientX
+    this.downY = event.clientY
+  }
+
   private onClick = (event: MouseEvent) => {
+    // 拖动旋转后松手会补发 click，位移超过阈值直接丢弃，避免误触下钻
+    if (Math.hypot(event.clientX - this.downX, event.clientY - this.downY) > 6) return
+    if (this.interactionMode === 'browse') return
     this.onPick?.(this.pickAt(event))
   }
 
   private onDblClick = (event: MouseEvent) => {
+    if (Math.hypot(event.clientX - this.downX, event.clientY - this.downY) > 6) return
     const key = this.pickAt(event)
     if (key) this.focusNode(key)
   }
@@ -842,7 +904,7 @@ export class TwinLevelScene {
     const key = this.pickAt(event)
     if (key === this.hoveredKey) return
     this.hoveredKey = key
-    this.canvas.style.cursor = key ? 'pointer' : 'grab'
+    this.canvas.style.cursor = key && this.interactionMode === 'operate' ? 'pointer' : 'grab'
     this.refreshLabels()
   }
 
@@ -904,6 +966,7 @@ export class TwinLevelScene {
   dispose() {
     cancelAnimationFrame(this.animId)
     this.unbindEvents()
+    this.clearRowSigns()
     this.clearNodeVisuals()
     this.composer?.dispose()
     this.composer = null

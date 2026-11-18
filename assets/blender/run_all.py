@@ -122,6 +122,11 @@ def main():
         },
         "assets": {},
     }
+    # 只重建部分资产时，保留其余资产的清单条目（否则 manifest 会被裁剪）
+    manifest_path = os.path.join(OUT, "manifest.json")
+    if only and os.path.exists(manifest_path):
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest["assets"] = json.load(f).get("assets", {})
 
     failures = []
     for asset in assets:
@@ -160,9 +165,9 @@ def main():
                 print(f"FAIL {tag}", flush=True)
                 traceback.print_exc()
 
-    with open(os.path.join(OUT, "manifest.json"), "w", encoding="utf-8") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
-    print(f"MANIFEST {os.path.join(OUT, 'manifest.json')}", flush=True)
+    print(f"MANIFEST {manifest_path}", flush=True)
 
     total_hi = sum(v["hi"]["bytes"] for v in manifest["assets"].values() if "hi" in v)
     total_lite = sum(v["lite"]["bytes"] for v in manifest["assets"].values() if "lite" in v)

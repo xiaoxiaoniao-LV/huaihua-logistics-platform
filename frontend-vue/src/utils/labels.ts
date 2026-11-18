@@ -50,3 +50,16 @@ export const ALERT_LEVEL_CLASS: Record<string, string> = {
   warn: 'alert-warn',
   info: 'alert-info',
 }
+
+/** 货位锚点 → 货位编号：Anchor_Slot_R01C03L2S1 → 01-03-2左（排-列-层-面） */
+export function slotCode(anchor?: string | null): string {
+  const m = /^Anchor_Slot_R(\d{2})C(\d{2})L(\d)S(\d)$/.exec(anchor || '')
+  if (!m) return ''
+  return `${m[1]}-${m[2]}-${m[3]}${m[4] === '1' ? '左' : '右'}`
+}
+
+/** 货位锚点 → 排号：Anchor_Slot_R03C01L1S1 → 03 */
+export function slotRow(anchor?: string | null): string {
+  const m = /^Anchor_Slot_R(\d{2})/.exec(anchor || '')
+  return m ? m[1] : ''
+}

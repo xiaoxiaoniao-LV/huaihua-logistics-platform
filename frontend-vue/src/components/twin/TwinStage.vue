@@ -6,6 +6,7 @@ import {
 } from '@/core/TwinLevelScene'
 import { useTwinStore } from '@/stores/twin'
 import DevicePointPanel from '@/components/twin/DevicePointPanel.vue'
+import { slotCode, slotRow } from '@/utils/labels'
 import type { TwinNode } from '@/api/twin'
 
 const twin = useTwinStore()
@@ -13,6 +14,10 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 const wrapRef = ref<HTMLElement | null>(null)
 const loadingModel = ref(false)
 const isFullscreen = ref(false)
+/** 浏览模式默认开启：单击不下钻，只有双击聚焦，杜绝拖拽后的误触 */
+const mode = ref<'browse' | 'operate'>('browse')
+const indexOpen = ref(true)
+const slotQuery = ref('')
 
 let scene: TwinLevelScene | null = null
 let pollTimer: number | null = null
@@ -66,12 +71,50 @@ const summaryItems = computed(() =>
 const stripNodes = computed(() => levelNodes.value.slice(0, 30))
 const stripHidden = computed(() => Math.max(0, levelNodes.value.length - stripNodes.value.length))
 
-const tipText = computed(() => {
-  if (stageKind.value === 'park') return '单击冷库进入库内 · 双击聚焦 · 拖拽旋转 · 滚轮缩放'
-  const last = breadcrumb.value[breadcrumb.value.length - 1]
-  if (last?.node_type === 'slot') return '点击设备查看点位 · Esc 返回货位层'
-  return '单击货位查看设备 · 双击聚焦 · Esc 返回'
+/** 当前层级里的货位节点，供编号速查使用 */
+const slotNodes = computed(() => levelNodes.value.filter((n) => n.node_type === 'slot'))
+
+const slotGroups = computed(() => {
+  const q = slotQuery.value.trim().toLowerCase()
+  const groups = new Map<string, Array<{ node: TwinNode; code: string }>>()
+  slotNodes.value.forEach((node) => {
+    const anchor = node.transform?.anchor as string | undefined
+    const code = slotCode(anchor)
+    if (!code) return
+    if (q && !`${code}${node.name}`.toLowerCase().includes(q)) return
+    const row = slotRow(anchor) || '--'
+    let list = groups.get(row)
+    if (!list) {
+      list = []
+      groups.set(row, list)
+    }
+    list.push({ node, code })
+  })
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([row, items]) => ({ row, items }))
 })
+
+const tipText = computed(() => {
+  if (stageKind.value === 'park') {
+    return mode.value === 'browse'
+      ? '浏览模式：拖拽旋转 · 滚轮缩放 · 双击聚焦'
+      : '操作模式：单击冷库进入库内 · 双击聚焦'
+  }
+  return mode.value === 'browse'
+    ? '浏览模式：拖拽查看货架 · 双击聚焦 · 切到操作模式可点选货位'
+    : '操作模式：单击货位定位设备 · 双击聚焦 · Esc 返回'
+})
+
+function setMode(next: 'browse' | 'operate') {
+  mode.value = next
+  scene?.setInteractionMode(next)
+}
+
+function locateSlot(node: TwinNode) {
+  twin.focusSlot(node)
+  scene?.focusNode(node.node_key)
+}
 
 function toLite(node: TwinNode): TwinNodeLite {
   return {
@@ -119,13 +162,6 @@ async function runSync() {
     loadingModel.value = true
     await scene.setStage(kind, nodes)
     loadingModel.value = false
-
-    // 下钻到货位后，直接把相机推到设备上，避免还停在整库视角
-    const last = breadcrumb.value[breadcrumb.value.length - 1]
-    if (last?.node_type === 'slot') {
-      const device = levelNodes.value[0]
-      if (device) scene.focusNode(device.node_key)
-    }
   } else {
     scene.updateValues(nodes)
   }
@@ -141,12 +177,19 @@ function onPick(nodeKey: string | null) {
   if (!node) return
   scene?.setSelected(nodeKey)
 
-  if (node.children.length) {
-    twin.drill(node)
+  // 货位：与左栏资源列表保持同一路径，停在库房层并高亮货位
+  if (node.node_type === 'slot') {
+    locateSlot(node)
     return
   }
-  const device = node.bindings[0]?.device_code
-  if (device) twin.selectDevice(device)
+  if (node.node_type === 'device') {
+    const device = node.bindings[0]?.device_code
+    if (device) twin.selectDevice(device)
+    return
+  }
+  if (node.children.length) {
+    twin.drill(node)
+  }
 }
 
 function goRoot() {
@@ -212,6 +255,7 @@ onMounted(async () => {
   scene = new TwinLevelScene(canvasRef.value)
   scene.init()
   scene.setPickCallback(onPick)
+  scene.setInteractionMode(mode.value)
   await syncScene()
 
   document.addEventListener('fullscreenchange', onFullscreenChange)
@@ -251,6 +295,18 @@ onUnmounted(() => {
 
       <div class="head-right">
         <span v-if="loadingModel" class="loading-chip">模型加载中</span>
+        <div class="mode-switch" :class="mode">
+          <button
+            :class="{ on: mode === 'browse' }"
+            title="浏览模式：单击不会下钻，防误触"
+            @click="setMode('browse')"
+          >浏览</button>
+          <button
+            :class="{ on: mode === 'operate' }"
+            title="操作模式：单击货位定位设备"
+            @click="setMode('operate')"
+          >操作</button>
+        </div>
         <div class="chips">
           <span v-for="item in summaryItems" :key="item.key" class="chip" :class="item.key">
             <i />{{ item.label }} {{ item.count }}
@@ -270,6 +326,33 @@ onUnmounted(() => {
 
     <!-- 操作提示 -->
     <div class="stage-tip">{{ tipText }}</div>
+
+    <!-- 货位编号速查：按排分组，点击直达对应货位 -->
+    <div v-if="slotNodes.length" class="slot-index" :class="{ collapsed: !indexOpen }">
+      <button class="index-head" @click="indexOpen = !indexOpen">
+        <span>编号速查</span>
+        <span class="index-toggle">{{ indexOpen ? '收起' : `${slotNodes.length} 个货位` }}</span>
+      </button>
+      <template v-if="indexOpen">
+        <input v-model="slotQuery" class="index-search" placeholder="搜索编号 / 名称" />
+        <div class="index-body">
+          <div v-for="g in slotGroups" :key="g.row" class="index-group">
+            <div class="index-row">{{ g.row }} 排<span>{{ g.items.length }}</span></div>
+            <div class="index-codes">
+              <button
+                v-for="item in g.items"
+                :key="item.node.node_key"
+                class="index-code"
+                :class="[item.node.status, { active: twin.highlightKey === item.node.node_key }]"
+                :title="`${item.node.name} · ${item.code}`"
+                @click="locateSlot(item.node)"
+              >{{ item.code }}</button>
+            </div>
+          </div>
+          <div v-if="!slotGroups.length" class="index-empty">没有匹配的货位编号</div>
+        </div>
+      </template>
+    </div>
 
     <!-- 图例 -->
     <div class="legend">
@@ -377,6 +460,22 @@ i.unknown { background: var(--status-pending); }
 }
 .tool:hover { color: var(--accent-cyan); border-color: var(--border-glow); background: var(--bg-card-hover); }
 
+.mode-switch {
+  display: inline-flex; gap: 2px; padding: 2px;
+  border: 1px solid var(--border-soft); border-radius: 999px;
+  background: var(--bg-card-soft);
+}
+.mode-switch button {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--text-muted); font-size: var(--fs-xs);
+  padding: 2px 9px; border-radius: 999px;
+}
+.mode-switch button:hover { color: var(--text-primary); }
+.mode-switch button.on {
+  background: rgba(0, 229, 255, 0.14);
+  color: var(--accent-cyan); font-weight: 600;
+}
+
 .loading-chip {
   font-size: var(--fs-xs); color: var(--accent-cyan);
   padding: 2px 8px; border-radius: 999px;
@@ -390,6 +489,60 @@ i.unknown { background: var(--status-pending); }
   background: rgba(4, 16, 34, 0.55); border: 1px solid var(--border-soft);
   pointer-events: none; z-index: 3;
 }
+
+/* 货位编号速查：左侧浮动面板，按排分组 */
+.slot-index {
+  position: absolute; left: 12px; top: 84px; width: 214px;
+  max-height: calc(100% - 178px);
+  display: flex; flex-direction: column;
+  border-radius: var(--radius-md);
+  background: rgba(4, 16, 34, 0.8);
+  border: 1px solid var(--border-soft);
+  backdrop-filter: blur(6px);
+  z-index: 3; overflow: hidden;
+}
+.slot-index.collapsed { width: auto; }
+.index-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 10px; cursor: pointer;
+  border: none; background: transparent; color: var(--text-primary);
+  font-size: var(--fs-sm); font-weight: 600;
+}
+.index-toggle { font-size: var(--fs-xs); color: var(--text-muted); font-weight: 400; }
+.index-search {
+  margin: 0 8px 6px; padding: 4px 8px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  background: var(--bg-card-soft); color: var(--text-primary);
+  font-size: var(--fs-xs); outline: none;
+}
+.index-search:focus { border-color: var(--border-glow); }
+.index-body { overflow-y: auto; padding: 0 8px 8px; }
+.index-body::-webkit-scrollbar { width: 4px; }
+.index-body::-webkit-scrollbar-thumb { background: var(--border-glow); border-radius: 2px; }
+.index-group { margin-top: 6px; }
+.index-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px; font-size: var(--fs-xs); color: var(--text-muted);
+}
+.index-codes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.index-code {
+  padding: 3px 0; cursor: pointer; text-align: center;
+  border: 1px solid var(--border-soft); border-left-width: 2px;
+  border-radius: var(--radius-sm); background: var(--bg-card-soft);
+  color: var(--text-secondary); font-size: 10px;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.index-code:hover { color: var(--text-primary); border-color: var(--border-glow); }
+.index-code.online { border-left-color: var(--accent-green); }
+.index-code.alarm { border-left-color: var(--alert-critical); }
+.index-code.degraded { border-left-color: var(--alert-warn); }
+.index-code.offline { border-left-color: var(--status-offline); }
+.index-code.maintenance { border-left-color: var(--accent-violet); }
+.index-code.active {
+  color: var(--accent-cyan); border-color: var(--accent-cyan);
+  background: rgba(0, 229, 255, 0.1);
+}
+.index-empty { padding: 8px 4px; text-align: center; font-size: var(--fs-xs); color: var(--text-muted); }
 
 .legend {
   position: absolute; left: 14px; bottom: 74px;
@@ -440,5 +593,6 @@ i.unknown { background: var(--status-pending); }
 @media (max-width: 1024px) {
   .node-strip { right: 12px; }
   .legend { display: none; }
+  .slot-index { display: none; }
 }
 </style>

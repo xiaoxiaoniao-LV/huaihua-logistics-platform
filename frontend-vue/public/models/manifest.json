@@ -2,7 +2,7 @@
   "version": 1,
   "units": "meter",
   "up_axis": "Y",
-  "generated_at": "2026-11-18T11:11:38",
+  "generated_at": "2026-11-18T13:11:18",
   "naming": {
     "Body_": "状态着色层（前端按业务状态改色）",
     "Device_": "可点击设备节点",
@@ -57,9 +57,9 @@
     "coldroom": {
       "hi": {
         "file": "coldroom_hi.glb",
-        "triangles": 31816,
-        "bytes": 1790964,
-        "objects": 755,
+        "triangles": 42688,
+        "bytes": 2398760,
+        "objects": 1001,
         "size": [
           54.0,
           41.4,
@@ -78,9 +78,9 @@
       },
       "lite": {
         "file": "coldroom_lite.glb",
-        "triangles": 13032,
-        "bytes": 757176,
-        "objects": 749,
+        "triangles": 13392,
+        "bytes": 806132,
+        "objects": 989,
         "size": [
           54.0,
           41.4,

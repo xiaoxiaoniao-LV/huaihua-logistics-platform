@@ -2,14 +2,22 @@
   "version": "3.1.0",
   "files": [
     {
+      "name": "ed25519.py",
+      "size": 8249,
+      "sha256": "e7cb912ca96555e880c79f2b843342a487ee5831131da74233baf21fcdfd4972"
+    },
+    {
       "name": "main.py",
       "size": 16098,
       "sha256": "e3a0f72216b70254cfdf54ade873282258377d3c5792dbfd6be8ed8995be82c5"
     },
     {
       "name": "ota.py",
-      "size": 5406,
-      "sha256": "1ee5e722920e044baaf99f8683ad46d6e377711a7ebb36f6a11945d7da450fe9"
+      "size": 6683,
+      "sha256": "f586a894df9c36c4a5ad6ca5f66dd79dc35f18a849dbbeae3dbad472942f364c"
     }
-  ]
+  ],
+  "signature": "il5WNipv3RbndixrE3yqLqC9ZyqJNHSC6oW0PS1FxOGPhxdIIQUyO2SHKUCsTGVASSpbMcGOIoyZHELj1vouAw==",
+  "signature_alg": "ed25519",
+  "public_key": "FDmiR+5fP4u6ziABVuz4+eHP4hIKD8PTkwm1mdK49pE="
 }

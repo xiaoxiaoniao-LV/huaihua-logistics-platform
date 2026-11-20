@@ -1,0 +1,74 @@
+# 告警规则样例：配合 backend 的 /metrics 使用
+groups:
+  - name: hhlg-backend
+    rules:
+      - alert: BackendDown
+        expr: up{job="hhlg-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "后端不可达"
+          description: "Prometheus 连续 1 分钟抓不到 /metrics，检查容器与端口。"
+
+      - alert: Http5xxRateHigh
+        expr: |
+          sum(rate(hhlg_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(hhlg_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "5xx 比例超过 5%"
+          description: "近 5 分钟服务端错误率 {{ $value | humanizePercentage }}。"
+
+      - alert: HttpLatencyP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(hhlg_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "接口 P95 耗时超过 2s"
+          description: "当前 P95 ≈ {{ $value }}s。"
+
+  - name: hhlg-business
+    rules:
+      - alert: OutboxEventsFailed
+        expr: hhlg_outbox_events{status="failed"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "存在投递失败的 outbox 事件"
+          description: "失败 {{ $value }} 条，排查 last_error 后可重置重投（见部署运维说明 8.10）。"
+
+      - alert: OutboxEventsBacklog
+        expr: hhlg_outbox_events{status="pending"} > 200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "outbox 待投递积压"
+          description: "pending {{ $value }} 条，检查 outbox worker 与 WS 广播。"
+
+      - alert: DevicesOffline
+        expr: hhlg_iot_devices{status="offline"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "存在离线设备"
+          description: "离线设备 {{ $value }} 台，检查网络与上报频率（DEVICE_OFFLINE_SECONDS）。"
+
+      - alert: ActiveAlertsPending
+        expr: hhlg_alerts_active > 0
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "活动告警长时间未处理"
+          description: "当前 {{ $value }} 条活动告警，可在「告警处理」页处理。"

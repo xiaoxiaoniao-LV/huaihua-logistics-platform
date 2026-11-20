@@ -214,7 +214,7 @@ onMounted(async () => {
 
     <div v-if="actionError" class="error-text">{{ actionError }}</div>
 
-    <div class="panel">
+    <div class="panel" data-guide="orders-panel">
       <table class="table">
         <thead>
           <tr>

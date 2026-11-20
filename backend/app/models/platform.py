@@ -24,6 +24,16 @@ class OutboxEvent(Base):
     published_at = Column(DateTime, nullable=True)
 
 
+class PlatformSetting(Base):
+    """运行时可改的平台级配置（JSON 值），如撮合权重。"""
+    __tablename__ = "platform_settings"
+
+    key = Column(String(60), primary_key=True)
+    value = Column(JSON, nullable=True)
+    updated_by = Column(BigInteger, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
     __table_args__ = (UniqueConstraint("scope", "idem_key", name="uq_idem_scope_key"),)

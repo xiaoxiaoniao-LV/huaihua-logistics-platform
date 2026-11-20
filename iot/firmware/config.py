@@ -58,6 +58,11 @@ MQTT_KEEPALIVE = 60
 OTA_VERSION_FILE = "version.txt"   # 升级成功后写入目标版本，重启后按此上报
 OTA_TIMEOUT = 15                   # 单个 HTTP 请求超时（秒）
 
+# 清单签名校验：填服务端 OTA_PUBLIC_KEY 的裸 base64（make_release.py 会打印）
+# 为空时无法验签；生产环境必须填写，并把 OTA_ALLOW_UNSIGNED 改成 False
+OTA_PUBLIC_KEY = ""
+OTA_ALLOW_UNSIGNED = True          # 仅调试用；生产必须 False
+
 # ==================== 组网方式（可选 ESP-NOW 汇聚） ====================
 # wifi   ：节点直连平台（默认，最稳妥）
 # espnow ：子节点把数据发给网关，由网关统一 HTTP 转发（网关固定走 wifi）

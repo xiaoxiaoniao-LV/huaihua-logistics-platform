@@ -35,6 +35,13 @@ class DeviceOut(BaseModel):
 class OTARequest(BaseModel):
     target_version: str = Field(min_length=1, max_length=20)
     device_ids: list[int] | None = None  # 为空表示全部设备
+    space_id: int | None = None  # 按空间（设备组）筛选；与 device_ids 同时给出时取交集
+    rollout_percent: int = Field(default=100, ge=1, le=100)  # 灰度比例，100 表示全量
+
+
+class OTARollbackRequest(BaseModel):
+    # 留空时按批次内出现最多的 from_version 回滚
+    target_version: str | None = Field(default=None, max_length=20)
 
 
 class OTAReport(BaseModel):
@@ -52,8 +59,24 @@ class OTATaskOut(BaseModel):
     target_version: str
     status: str
     message: str | None = None
+    batch_id: str | None = None
+    stage: str | None = None
     created_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class OTABatchOut(BaseModel):
+    batch_id: str
+    target_version: str
+    stage: str
+    status: str
+    rollout_percent: int
+    rollback_of: str | None = None
+    total: int
+    pending: int
+    running: int
+    success: int
+    failed: int
 
 
 class ImportErrorItem(BaseModel):

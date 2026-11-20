@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import GuideTour from '@/components/common/GuideTour.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -31,7 +32,7 @@ function logout() {
         <span class="caption">虚拟构建 · 供给工作台</span>
       </div>
 
-      <nav class="nav">
+      <nav class="nav" data-guide="top-nav">
         <RouterLink to="/workbench" class="nav-item">工作台</RouterLink>
         <RouterLink to="/market" class="nav-item">资源市场</RouterLink>
         <RouterLink to="/resources" class="nav-item">资源发布</RouterLink>
@@ -58,6 +59,8 @@ function logout() {
     <main class="content">
       <RouterView />
     </main>
+
+    <GuideTour />
   </div>
 </template>
 

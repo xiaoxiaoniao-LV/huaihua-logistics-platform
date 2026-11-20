@@ -75,6 +75,12 @@ interface NodeVisual {
   pick: THREE.Mesh
   ring: THREE.Mesh | null
   ringMat: THREE.MeshBasicMaterial | null
+  /** 货位状态环在 InstancedMesh 中的下标，货位以外为 null */
+  ringIndex: number | null
+  /** 高清冷链箱（近处显示）；无模型时为 null */
+  detail: THREE.Object3D | null
+  /** 低模代理盒（远处显示）；无模型时为 null */
+  proxy: THREE.Mesh | null
   labelObj: CSS2DObject
   labelEl: HTMLDivElement
   bodyMats: THREE.MeshStandardMaterial[]
@@ -122,6 +128,18 @@ export class TwinLevelScene {
   private downX = 0
   private downY = 0
   private rowSignLabels: CSS2DObject[] = []
+
+  // 货位状态环合批：24 个货位共用一次 draw call
+  private slotRings: THREE.InstancedMesh | null = null
+  private slotRingMat: THREE.MeshBasicMaterial | null = null
+  private slotRingGeo: THREE.RingGeometry | null = null
+  private slotAlarm = false
+
+  // LOD 与标签剔除按 200ms 节流，避免每帧遍历全量节点
+  private lodTimer = 0
+  private labelTimer = 0
+  private projScreen = new THREE.Matrix4()
+  private culledKeys = new Set<string>()
 
   // 真实模型
   private stageKind: TwinStageKind | null = null
@@ -251,6 +269,7 @@ export class TwinLevelScene {
       v.beaconMats.forEach((m) => m.color.setHex(color))
       this.fillLabel(v.labelEl, next, color)
     })
+    this.refreshSlotRingColors()
     this.applyStageTint()
     this.setSelected(this.selectedKey)
     this.refreshLabels()
@@ -265,6 +284,7 @@ export class TwinLevelScene {
       v.group.scale.setScalar(on ? v.baseScale * 1.04 : v.baseScale)
       if (on) picked = v
     })
+    this.refreshSlotRingColors()
     this.updateBeam(picked)
     this.refreshLabels()
   }
@@ -506,6 +526,7 @@ export class TwinLevelScene {
       this.nodeGroup.add(visual.group)
       this.pickTargets.push(visual.pick)
     })
+    this.rebuildSlotRings()
     this.refreshLabels()
     this.setSelected(this.selectedKey)
   }
@@ -531,6 +552,8 @@ export class TwinLevelScene {
     const isDevice = node.node_type === 'device'
     let ring: THREE.Mesh | null = null
     let ringMat: THREE.MeshBasicMaterial | null = null
+    let detail: THREE.Object3D | null = null
+    let proxy: THREE.Mesh | null = null
     let labelY = 2.4
     let pick: THREE.Mesh
 
@@ -606,7 +629,7 @@ export class TwinLevelScene {
       disposables.push(pickGeo)
       group.add(pick)
     } else {
-      // 货位：真实冷链箱 + 地面状态环
+      // 货位：真实冷链箱 + 低模代理（距离 LOD）；状态环统一由 InstancedMesh 合批
       if (this.coldboxModel) {
         const box = this.cloneColdbox()
         box.traverse((obj) => {
@@ -627,6 +650,19 @@ export class TwinLevelScene {
           obj.receiveShadow = PERF_BUDGET.enableShadow
         })
         group.add(box)
+        detail = box
+
+        const proxyGeo = new THREE.BoxGeometry(1.2, 1.6, 1.0)
+        const proxyMat = new THREE.MeshStandardMaterial({
+          color: 0x16354f, emissive: color, emissiveIntensity: 0.3, metalness: 0.3, roughness: 0.5,
+        })
+        const proxyBox = new THREE.Mesh(proxyGeo, proxyMat)
+        proxyBox.position.y = 0.8
+        proxyBox.visible = false
+        group.add(proxyBox)
+        bodyMats.push(proxyMat)
+        disposables.push(proxyGeo, proxyMat)
+        proxy = proxyBox
       } else {
         const fallbackGeo = new THREE.BoxGeometry(1.2, 1.6, 1.0)
         const fallbackMat = new THREE.MeshStandardMaterial({
@@ -638,17 +674,6 @@ export class TwinLevelScene {
         bodyMats.push(fallbackMat)
         disposables.push(fallbackGeo, fallbackMat)
       }
-
-      const ringGeo = new THREE.RingGeometry(0.72, 0.92, 40)
-      ringMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.45, side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      })
-      ring = new THREE.Mesh(ringGeo, ringMat)
-      ring.rotation.x = -Math.PI / 2
-      ring.position.y = 0.03
-      group.add(ring)
-      disposables.push(ringGeo, ringMat)
 
       labelY = 2.3
 
@@ -671,6 +696,7 @@ export class TwinLevelScene {
 
     return {
       node, group, anchor, pick, ring, ringMat,
+      ringIndex: null, detail, proxy,
       labelObj: label,
       labelEl: label.element as HTMLDivElement,
       bodyMats, beaconMats,
@@ -683,6 +709,101 @@ export class TwinLevelScene {
     const clone = this.coldboxModel!.clone(true)
     // 共享几何体、克隆材质，避免 24 个货位互相串色
     return clone
+  }
+
+  /** 把所有货位的地面状态环合成一个 InstancedMesh，24 个环只占一次 draw call */
+  private rebuildSlotRings() {
+    this.disposeSlotRings()
+    const slots = this.visuals.filter((v) => v.node.node_type === 'slot')
+    if (!slots.length) return
+
+    const geo = new THREE.RingGeometry(0.72, 0.92, 20)
+    geo.rotateX(-Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.45, side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    const mesh = new THREE.InstancedMesh(geo, mat, slots.length)
+    mesh.frustumCulled = false
+    mesh.renderOrder = 1
+    const m = new THREE.Matrix4()
+    slots.forEach((v, i) => {
+      v.ringIndex = i
+      m.makeTranslation(v.anchor.x, v.anchor.y + 0.03, v.anchor.z)
+      mesh.setMatrixAt(i, m)
+    })
+    mesh.instanceMatrix.needsUpdate = true
+    this.nodeGroup.add(mesh)
+    this.slotRings = mesh
+    this.slotRingMat = mat
+    this.slotRingGeo = geo
+
+    this.refreshSlotRingColors()
+  }
+
+  /** 按货位状态刷新合批环的实例颜色（选中项提亮） */
+  private refreshSlotRingColors() {
+    const mesh = this.slotRings
+    if (!mesh) return
+    const c = new THREE.Color()
+    const hi = new THREE.Color(0xffffff)
+    let alarm = false
+    this.visuals.forEach((v) => {
+      if (v.ringIndex === null) return
+      c.setHex(TWIN_STATUS_COLOR[v.node.status] ?? TWIN_STATUS_COLOR.unknown)
+      if (v.node.status === 'alarm') alarm = true
+      if (v.node.node_key === this.selectedKey) c.lerp(hi, 0.5)
+      mesh.setColorAt(v.ringIndex, c)
+    })
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    this.slotAlarm = alarm
+  }
+
+  private disposeSlotRings() {
+    if (this.slotRings) {
+      this.nodeGroup.remove(this.slotRings)
+      this.slotRings.dispose()
+    }
+    this.slotRingGeo?.dispose()
+    this.slotRingMat?.dispose()
+    this.slotRings = null
+    this.slotRingGeo = null
+    this.slotRingMat = null
+    this.slotAlarm = false
+  }
+
+  /** 距离 LOD：近处真实冷链箱，远处换成低模代理，减少三角面与材质切换 */
+  private updateLod(now: number) {
+    if (now - this.lodTimer < 200) return
+    this.lodTimer = now
+    const limit = this.stageKind === 'park' ? 90 : 34
+    this.visuals.forEach((v) => {
+      if (!v.detail || !v.proxy) return
+      const near = this.camera.position.distanceTo(v.anchor) <= limit
+      v.detail.visible = near
+      v.proxy.visible = !near
+    })
+  }
+
+  /** 标签剔除：视锥之外或超出距离上限的铭牌不参与 CSS2D 布局 */
+  private updateLabelVisibility(now: number) {
+    if (now - this.labelTimer < 200) return
+    this.labelTimer = now
+    this.camera.updateMatrixWorld()
+    this.projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
+    const limit = this.stageKind === 'park' ? 420 : 140
+    const p = new THREE.Vector4()
+    this.culledKeys.clear()
+    this.visuals.forEach((v) => {
+      if (this.camera.position.distanceTo(v.anchor) > limit) {
+        this.culledKeys.add(v.node.node_key)
+        return
+      }
+      p.set(v.anchor.x, v.anchor.y + 1.5, v.anchor.z, 1).applyMatrix4(this.projScreen)
+      const out = p.w <= 0 || Math.abs(p.x) > p.w * 1.05 || Math.abs(p.y) > p.w * 1.05
+      if (out) this.culledKeys.add(v.node.node_key)
+    })
+    this.refreshLabels()
   }
 
   private invisibleMaterial() {
@@ -780,10 +901,18 @@ export class TwinLevelScene {
   private refreshLabels() {
     this.visuals.forEach((v) => {
       const n = v.node
+      const forced = n.node_key === this.selectedKey || n.node_key === this.hoveredKey
+      if (forced) {
+        v.labelObj.visible = true
+        return
+      }
+      if (this.culledKeys.has(n.node_key)) {
+        v.labelObj.visible = false
+        return
+      }
       const always = n.node_type === 'building' || n.node_type === 'site' || n.node_type === 'device'
       const attention = n.status === 'alarm' || n.status === 'offline' || n.status === 'degraded'
       v.labelObj.visible = always || attention
-        || n.node_key === this.selectedKey || n.node_key === this.hoveredKey
     })
   }
 
@@ -812,6 +941,7 @@ export class TwinLevelScene {
 
   private clearNodeVisuals() {
     this.selectedBeam = null
+    this.disposeSlotRings()
     this.visuals.forEach((v) => {
       v.labelEl.remove()
       v.disposables.forEach((d) => d.dispose())
@@ -821,6 +951,7 @@ export class TwinLevelScene {
     this.visuals = []
     this.pickTargets = []
     this.hoveredKey = null
+    this.culledKeys.clear()
   }
 
   // ===================== 相机 =====================
@@ -956,6 +1087,13 @@ export class TwinLevelScene {
         (this.selectedBeam.material as THREE.MeshBasicMaterial).opacity =
           0.14 + Math.abs(Math.sin(t * 1.6)) * 0.16
       }
+
+      // 合批状态环共用一个材质，告警时整体脉动
+      if (this.slotRingMat) {
+        this.slotRingMat.opacity = this.slotAlarm ? 0.45 + Math.abs(Math.sin(t * 2.4)) * 0.4 : 0.45
+      }
+      this.updateLod(now)
+      this.updateLabelVisibility(now)
 
       this.controls.update()
       if (this.composer) this.composer.render()

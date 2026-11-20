@@ -11,6 +11,10 @@
   - 个性化偏好（登录用户历史需求类型命中 +10）
 
 同时输出中文推荐理由，便于前端展示“为什么推荐”。
+
+权重可配置：各维度默认权重 1.0（即历史满分），管理员可通过
+`PUT /api/v1/match/weights` 调整；分数 = Σ(原始分 × 权重)，分项原始分保留在
+score_breakdown 中，weighted_breakdown 给出加权后的分值，便于解释排序依据。
 """
 from datetime import datetime, timedelta
 from typing import Any
@@ -18,7 +22,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models import Order, Resource, Review, User
+from ..models import Order, PlatformSetting, Resource, Review, User
 
 _TYPE_CN = {
     "warehouse": "冷库",
@@ -29,6 +33,52 @@ _TYPE_CN = {
 
 _HOT_WINDOW_DAYS = 30
 _PREF_HISTORY_LIMIT = 50
+
+# 可调权重的维度（顺序即前端展示顺序）
+DIMENSION_LABELS: dict[str, str] = {
+    "price_score": "价格友好",
+    "credit_score": "供给方信用",
+    "window_score": "可租窗口",
+    "type_match": "类型命中",
+    "rating_score": "供给方口碑",
+    "hotness_score": "成交热度",
+    "freshness_score": "上新程度",
+    "preference_score": "个性化偏好",
+}
+DEFAULT_WEIGHTS: dict[str, float] = {k: 1.0 for k in DIMENSION_LABELS}
+MATCHING_WEIGHTS_KEY = "matching_weights"
+_WEIGHT_MAX = 5.0
+
+
+def load_weights(db: Session) -> dict[str, float]:
+    """读取运行时权重；缺省或脏数据时回落到 1.0，保证打分口径稳定。"""
+    row = db.get(PlatformSetting, MATCHING_WEIGHTS_KEY)
+    raw = (row.value or {}) if row and isinstance(row.value, dict) else {}
+    out = dict(DEFAULT_WEIGHTS)
+    for key in DEFAULT_WEIGHTS:
+        try:
+            value = float(raw.get(key, 1.0))
+        except (TypeError, ValueError):
+            continue
+        out[key] = round(max(0.0, min(_WEIGHT_MAX, value)), 2)
+    return out
+
+
+def save_weights(db: Session, weights: dict[str, float], user_id: int | None = None) -> dict[str, float]:
+    """保存权重（缺省维度填 1.0），返回归一化后的完整权重。"""
+    merged = dict(DEFAULT_WEIGHTS)
+    for key in DEFAULT_WEIGHTS:
+        if key in weights:
+            merged[key] = round(max(0.0, min(_WEIGHT_MAX, float(weights[key]))), 2)
+    row = db.get(PlatformSetting, MATCHING_WEIGHTS_KEY)
+    if row is None:
+        row = PlatformSetting(key=MATCHING_WEIGHTS_KEY, value=merged, updated_by=user_id)
+        db.add(row)
+    else:
+        row.value = merged
+        row.updated_by = user_id
+    db.commit()
+    return load_weights(db)
 
 
 def _clamp(v: float) -> float:
@@ -82,8 +132,10 @@ def recommend(
     resource_id: int | None = None,
     top_n: int = 5,
     user_id: int | None = None,
+    weights: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """对当前市场上的 available 资源打分排序，返回 top N。"""
+    w = weights or load_weights(db)
     query = db.query(Resource).filter(Resource.status == "available")
     if resource_type:
         query = query.filter(Resource.type == resource_type)
@@ -125,14 +177,12 @@ def recommend(
             "preference_score": 0.0,
         }
         reasons: list[str] = []
-        s = 0.0
 
         # 价格得分 0-30
         if r.price is not None:
             p = float(r.price)
             ps = max(0.0, 30.0 * (1 - (p - lo) / price_range))
             bd["price_score"] = ps
-            s += ps
             if price_range > 1e-6 and p <= lo + price_range / 3:
                 reasons.append("价格为同类最低档")
 
@@ -140,7 +190,6 @@ def recommend(
         cr = credits.get(r.user_id, 100)
         cs = 20.0 * _clamp((cr - 60) / 40)
         bd["credit_score"] = cs
-        s += cs
         if cr >= 95:
             reasons.append(f"供给方信用分 {cr:.0f}")
 
@@ -149,32 +198,27 @@ def recommend(
             span_days = max(0.0, (r.available_end - max(r.available_start, now)).total_seconds() / 86400)
             ws = min(20.0, span_days * 2.0)
             bd["window_score"] = ws
-            s += ws
             if span_days >= 7:
                 reasons.append(f"可租窗口覆盖 {span_days:.0f} 天")
 
         # 类型匹配加分 0/10
         if resource_type:
             bd["type_match"] = 10.0
-            s += 10.0
 
         # 口碑 0-15：均分 3 分 → 0，5 分 → 15；无评价给 9 分中性值
         avg_rating, review_cnt = ratings.get(r.user_id, (0.0, 0))
         if review_cnt:
             rs = 15.0 * _clamp((avg_rating - 3) / 2)
             bd["rating_score"] = rs
-            s += rs
             if avg_rating >= 4.5:
                 reasons.append(f"供给方口碑 {avg_rating:.1f} 分（{review_cnt} 条评价）")
         else:
             bd["rating_score"] = 9.0
-            s += 9.0
 
         # 成交热度 0-10
         hot_cnt = hotness.get(r.user_id, 0)
         hs = 10.0 * min(1.0, hot_cnt / max_hot)
         bd["hotness_score"] = hs
-        s += hs
         if hot_cnt >= 5:
             reasons.append(f"近 {_HOT_WINDOW_DAYS} 天成交 {hot_cnt} 单")
 
@@ -183,17 +227,17 @@ def recommend(
             age_days = max(0.0, (now - r.created_at).total_seconds() / 86400)
             fs = 5.0 * _clamp(1 - age_days / 30)
             bd["freshness_score"] = fs
-            s += fs
             if age_days <= 3:
                 reasons.append("新上架资源")
 
         # 个性化偏好 0/10
         if r.type in preferred:
             bd["preference_score"] = 10.0
-            s += 10.0
             reasons.append(f"符合你的历史偏好（{_TYPE_CN.get(r.type, r.type)}）")
 
-        scored.append((s, bd, reasons, r))
+        # 加权汇总：默认全部 1.0，与未引入权重时的分数完全一致
+        total = sum(bd[key] * w.get(key, 1.0) for key in bd)
+        scored.append((total, bd, reasons, r))
 
     scored.sort(key=lambda x: (-x[0], float(x[3].price or 0)))
 
@@ -209,6 +253,7 @@ def recommend(
             "status": r.status,
             "match_score": round(score, 2),
             "score_breakdown": {k: round(v, 2) for k, v in bd.items()},
+            "weighted_breakdown": {k: round(v * w.get(k, 1.0), 2) for k, v in bd.items()},
             "reasons": reasons,
         })
     return out

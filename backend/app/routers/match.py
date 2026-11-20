@@ -5,9 +5,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_optional_user
+from ..deps import get_admin_user, get_optional_user
 from ..models import User
-from ..services.matching import recommend
+from ..schemas.match import MatchWeightsIn, MatchWeightsOut
+from ..services.matching import (
+    DEFAULT_WEIGHTS, DIMENSION_LABELS, load_weights, recommend, save_weights,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,3 +61,34 @@ def recommend_resources(
     if rc is not None:
         rc.set_json(cache_key, payload, ttl=_TTL)
     return payload
+
+
+@router.get("/weights", response_model=MatchWeightsOut)
+def get_weights(
+    db: Session = Depends(get_db),
+    current: User = Depends(get_admin_user),
+):
+    """当前撮合权重与维度中文名（管理员可读，便于前端做权重面板）。"""
+    return MatchWeightsOut(
+        weights=load_weights(db),
+        labels=DIMENSION_LABELS,
+        defaults=DEFAULT_WEIGHTS,
+    )
+
+
+@router.put("/weights", response_model=MatchWeightsOut)
+def update_weights(
+    payload: MatchWeightsIn,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_admin_user),
+):
+    """调整撮合权重；改完立即清空推荐缓存，下一次请求按新权重排序。"""
+    weights = save_weights(db, payload.weights, user_id=current.id)
+    rc = _rc()
+    if rc is not None:
+        rc.delete_by_pattern("match:recommend:*")
+    return MatchWeightsOut(
+        weights=weights,
+        labels=DIMENSION_LABELS,
+        defaults=DEFAULT_WEIGHTS,
+    )

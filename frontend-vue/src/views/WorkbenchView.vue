@@ -142,7 +142,7 @@ onMounted(async () => {
       </RouterLink>
     </div>
 
-    <div class="quick-grid">
+    <div class="quick-grid" data-guide="quick-start">
       <RouterLink to="/market" class="quick-card">
         <div class="quick-title">资源市场</div>
         <div class="quick-desc">查看平台全部供给与撮合结果</div>

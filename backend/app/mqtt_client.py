@@ -73,6 +73,8 @@ def _on_message(_cli, _userdata, msg):
                     ),
                 )
             db.commit()
+            from .metrics import IOT_MESSAGES
+            IOT_MESSAGES.inc()
         finally:
             db.close()
     except Exception as e:

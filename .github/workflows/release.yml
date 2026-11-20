@@ -1,0 +1,133 @@
+name: release
+
+# 打 tag 即发布：构建四个镜像推到 GHCR；配置了 DEPLOY_* secrets 时自动 SSH 部署。
+# 触发：git tag v3.1.0 && git push origin v3.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "构建后是否执行远程部署"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: 构建并推送镜像
+    runs-on: ubuntu-latest
+    outputs:
+      image_prefix: ${{ steps.meta.outputs.image_prefix }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算镜像地址与标签
+        id: meta
+        run: |
+          prefix="${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image_prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        run: |
+          set -e
+          PREFIX="${{ steps.meta.outputs.image_prefix }}"
+          TAG="${{ steps.meta.outputs.image_tag }}"
+          docker build -t "$PREFIX-backend:$TAG" \
+            --build-arg PIP_INDEX_URL=https://pypi.org/simple backend
+          docker build -t "$PREFIX-frontend:$TAG" \
+            --build-arg NPM_REGISTRY=https://registry.npmjs.org frontend-vue
+          docker build -t "$PREFIX-demand:$TAG" \
+            --build-arg NPM_REGISTRY=https://registry.npmjs.org demand-app
+          docker build -t "$PREFIX-simulator:$TAG" -f iot/Dockerfile .
+          docker push "$PREFIX-backend:$TAG"
+          docker push "$PREFIX-frontend:$TAG"
+          docker push "$PREFIX-demand:$TAG"
+          docker push "$PREFIX-simulator:$TAG"
+
+  deploy:
+    name: 部署到现场服务器
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查部署配置（未配置 secrets 则跳过）
+        id: gate
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          MANUAL_DEPLOY: ${{ github.event.inputs.deploy }}
+        run: |
+          enabled="false"
+          if [ -n "$DEPLOY_HOST" ]; then
+            if [ "${GITHUB_EVENT_NAME}" = "push" ] || [ "$MANUAL_DEPLOY" = "true" ]; then
+              enabled="true"
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" = "false" ]; then
+            echo "未配置 DEPLOY_HOST 或手动触发未勾选部署，跳过远程部署"
+          fi
+
+      - name: 准备 SSH
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: 远程拉取镜像并重启
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_WEB_PORT: ${{ secrets.DEPLOY_WEB_PORT }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          IMAGE_PREFIX: ${{ needs.images.outputs.image_prefix }}
+          IMAGE_TAG: ${{ needs.images.outputs.image_tag }}
+        run: |
+          set -e
+          WEB_PORT="${DEPLOY_WEB_PORT:-8080}"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH='$DEPLOY_PATH' IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' GHCR_ACTOR='${{ github.actor }}' GHCR_TOKEN='$GHCR_TOKEN' WEB_PORT='$WEB_PORT' bash -s" <<'REMOTE'
+          set -e
+          cd "$DEPLOY_PATH"
+          if [ -n "$GHCR_TOKEN" ]; then
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin
+          fi
+          export HHLG_BACKEND_IMAGE="$IMAGE_PREFIX-backend:$IMAGE_TAG"
+          export HHLG_FRONTEND_IMAGE="$IMAGE_PREFIX-frontend:$IMAGE_TAG"
+          export HHLG_DEMAND_IMAGE="$IMAGE_PREFIX-demand:$IMAGE_TAG"
+          export HHLG_SIMULATOR_IMAGE="$IMAGE_PREFIX-simulator:$IMAGE_TAG"
+          docker compose pull backend frontend demand
+          docker compose up -d --no-build backend frontend demand
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${WEB_PORT}/api/health" >/dev/null; then
+              echo "部署成功：$IMAGE_TAG 已上线"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "健康检查超时，输出最近日志"
+          docker compose logs --tail=100 backend
+          exit 1
+          REMOTE
+          echo "如需完整验收，在服务器执行：python scripts/acceptance.py"

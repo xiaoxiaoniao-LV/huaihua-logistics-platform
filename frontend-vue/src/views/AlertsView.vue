@@ -193,7 +193,7 @@ onMounted(async () => {
         </button>
       </div>
 
-      <div class="panel">
+      <div class="panel" data-guide="alerts-panel">
         <table class="table">
           <thead>
             <tr>

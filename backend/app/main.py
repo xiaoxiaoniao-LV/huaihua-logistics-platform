@@ -3,12 +3,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from . import models  # noqa: F401  确保模型注册到 Base.metadata
 from .api.v1 import api_router
 from .config import settings
+from .metrics import CONTENT_TYPE_LATEST, prometheus_middleware, render_metrics
 from .routers import ws
 from .ws_broadcast import hub
 
@@ -46,8 +48,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.middleware("http")(prometheus_middleware)
+
 app.include_router(api_router)
 app.include_router(ws.router)
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics(authorization: str | None = Header(default=None)):
+    """Prometheus 抓取端点；配置 METRICS_TOKEN 后需 Bearer 鉴权。"""
+    if settings.metrics_token and authorization != f"Bearer {settings.metrics_token}":
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return Response(content=render_metrics(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/health")

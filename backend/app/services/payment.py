@@ -4,9 +4,14 @@
 所有支付事件落 `payment_events`，以 (provider, provider_txn_id) 唯一约束去重，
 重复通知只生效一次。真实支付宝对接时，只需在此实现下单与验签，路由层不变。
 """
+import base64
 import logging
 import time
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -96,19 +101,86 @@ def apply_event(
     return True
 
 
-def handle_alipay_notify(db: Session, payload: dict) -> tuple[bool, str]:
-    """处理支付宝异步通知（sandbox 简化版）。
+def _sign_content(payload: dict) -> str:
+    """按支付宝规则拼接待验签串：剔除 sign/sign_type，按键名升序，值保持原文。"""
+    items = [
+        f"{k}={v}"
+        for k, v in payload.items()
+        if k not in ("sign", "sign_type") and v is not None and v != ""
+    ]
+    return "&".join(sorted(items))
 
-    生产环境需在此用 alipay_app_id + 应用私钥做 RSA2 验签；
-    未配置 app_id 时仅接受本机 sandbox 模拟通知。
+
+def _load_alipay_public_key(text: str):
+    """兼容 PEM 与支付宝后台拷贝的裸 base64 公钥。"""
+    text = text.strip().replace("\\n", "\n")
+    if "BEGIN PUBLIC KEY" not in text:
+        body = "".join(text.split())
+        text = (
+            "-----BEGIN PUBLIC KEY-----\n"
+            + "\n".join(body[i:i + 64] for i in range(0, len(body), 64))
+            + "\n-----END PUBLIC KEY-----"
+        )
+    return load_pem_public_key(text.encode("utf-8"))
+
+
+def verify_alipay_sign(payload: dict) -> tuple[bool, str]:
+    """校验支付宝异步通知的 RSA2(SHA256withRSA) 签名。"""
+    sign = str(payload.get("sign") or "")
+    if not sign:
+        return False, "缺少签名"
+    key_text = settings.alipay_public_key.strip()
+    if not key_text:
+        return False, "未配置支付宝公钥"
+    try:
+        public_key = _load_alipay_public_key(key_text)
+        public_key.verify(
+            base64.b64decode(sign),
+            _sign_content(payload).encode("utf-8"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except InvalidSignature:
+        return False, "签名校验失败"
+    except Exception as exc:  # 公钥格式错误、base64 非法等
+        return False, f"验签异常：{exc}"
+    return True, "ok"
+
+
+def _parse_order_id(payload: dict, trade_no: str) -> int | None:
+    raw = payload.get("order_id") or payload.get("out_trade_no")
+    if raw is not None and str(raw).strip():
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            pass
+    return _order_id_from_trade_no(trade_no)
+
+
+def handle_alipay_notify(db: Session, payload: dict) -> tuple[bool, str]:
+    """处理支付宝异步通知。
+
+    配置 `ALIPAY_PUBLIC_KEY` 后强制 RSA2 验签，并校验 app_id / seller_id / 金额；
+    未配置公钥时只允许 sandbox 模式（本机模拟通知），避免生产裸奔。
     """
+    if settings.alipay_public_key:
+        ok, msg = verify_alipay_sign(payload)
+        if not ok:
+            return False, msg
+        if settings.alipay_app_id and str(payload.get("app_id") or "") != settings.alipay_app_id:
+            return False, "app_id 与配置不一致"
+        if settings.alipay_seller_id and str(payload.get("seller_id") or "") != settings.alipay_seller_id:
+            return False, "seller_id 与配置不一致"
+    elif settings.payment_mode != "sandbox":
+        return False, "未配置支付宝公钥，拒绝处理异步通知"
+
     trade_no = str(payload.get("trade_no") or "")
     trade_status = str(payload.get("trade_status") or "")
     event_type = _STATUS_MAP.get(trade_status)
     if event_type is None:
         return False, f"不支持的交易状态：{trade_status}"
 
-    order_id = payload.get("order_id") or _order_id_from_trade_no(trade_no)
+    order_id = _parse_order_id(payload, trade_no)
     if not order_id:
         return False, "无法从通知中解析订单号"
     order = db.get(Order, int(order_id))
@@ -116,6 +188,13 @@ def handle_alipay_notify(db: Session, payload: dict) -> tuple[bool, str]:
         return False, "订单不存在"
 
     amount = payload.get("total_amount")
+    if amount is not None and order.total_price is not None:
+        try:
+            if abs(float(amount) - float(order.total_price)) > 0.01:
+                return False, "通知金额与订单金额不一致"
+        except (TypeError, ValueError):
+            return False, "通知金额格式非法"
+
     ok = apply_event(
         db,
         order,

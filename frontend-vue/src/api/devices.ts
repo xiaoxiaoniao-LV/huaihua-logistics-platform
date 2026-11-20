@@ -79,15 +79,52 @@ export interface OtaTask {
   target_version: string
   status: 'pending' | 'running' | 'success' | 'failed' | string
   message?: string | null
+  batch_id?: string | null
+  stage?: string | null
   created_at?: string | null
   finished_at?: string | null
+}
+
+export interface OtaBatch {
+  batch_id: string
+  target_version: string
+  stage: 'canary' | 'full' | 'rollback' | string
+  status: 'running' | 'done' | 'failed' | 'rolled_back' | string
+  rollout_percent: number
+  rollback_of?: string | null
+  total: number
+  pending: number
+  running: number
+  success: number
+  failed: number
 }
 
 export function listOtaTasks(limit = 20) {
   return http.get<OtaTask[]>('/api/v1/devices/ota', { params: { limit } })
 }
 
-/** 创建批量升级任务；device_ids 为空表示全部设备。 */
-export function createOtaJob(payload: { target_version: string; device_ids?: number[] }) {
+/** 创建批量升级任务；device_ids 为空表示全部设备，rollout_percent<100 走灰度。 */
+export function createOtaJob(payload: {
+  target_version: string
+  device_ids?: number[]
+  space_id?: number
+  rollout_percent?: number
+}) {
   return http.post<OtaTask[]>('/api/v1/devices/ota', payload)
+}
+
+export function getOtaBatch(batchId: string) {
+  return http.get<OtaBatch>(`/api/v1/devices/ota/batch/${batchId}`)
+}
+
+/** 灰度批次续发为全量。 */
+export function promoteOtaBatch(batchId: string) {
+  return http.post<OtaBatch>(`/api/v1/devices/ota/batch/${batchId}/promote`)
+}
+
+/** 回滚批次；不传版本时回到该批次升级前的版本。 */
+export function rollbackOtaBatch(batchId: string, target_version?: string) {
+  return http.post<OtaBatch>(`/api/v1/devices/ota/batch/${batchId}/rollback`, {
+    target_version,
+  })
 }

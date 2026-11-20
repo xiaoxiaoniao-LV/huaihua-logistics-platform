@@ -45,3 +45,32 @@ export function updateSettlementStatus(id: number, newStatus: string, remark?: s
     params: { new_status: newStatus, ...(remark ? { remark } : {}) },
   })
 }
+
+/** 下载结算凭证（单页 A4 发票 PDF）。 */
+export function getInvoicePdf(id: number) {
+  return http.get<Blob>(`/api/v1/settlements/${id}/invoice.pdf`, { responseType: 'blob' })
+}
+
+/** 租户分账：按供给方聚合结算笔数、金额、佣金与已付/待付。 */
+export interface SettlementSplitRow {
+  supplier_id: number
+  supplier_name: string
+  settlements: number
+  amount: number
+  commission: number
+  payable: number
+  paid: number
+  unpaid: number
+}
+
+export interface SettlementSplit {
+  start: string | null
+  end: string | null
+  suppliers: number
+  items: SettlementSplitRow[]
+  total: Omit<SettlementSplitRow, 'supplier_id' | 'supplier_name'>
+}
+
+export function getSettlementSplit(params?: { start?: string; end?: string }) {
+  return http.get<SettlementSplit>('/api/v1/settlements/split', { params })
+}

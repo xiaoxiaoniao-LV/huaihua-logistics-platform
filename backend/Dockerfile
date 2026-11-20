@@ -6,8 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# pip 源可通过构建参数覆盖（默认国内镜像；CI 可传入 https://pypi.org/simple）
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout 120 -i "$PIP_INDEX_URL" -r requirements.txt
 
 COPY . .
 

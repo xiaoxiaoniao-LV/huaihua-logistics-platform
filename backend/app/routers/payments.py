@@ -1,7 +1,8 @@
 """支付：下单获取收银台、sandbox 模拟支付、支付宝异步通知。"""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -76,12 +77,29 @@ def mock_checkout(
 
 
 @router.post("/notify/alipay")
-def alipay_notify(payload: dict, db: Session = Depends(get_db)):
-    """支付宝异步通知（sandbox 简化版，生产需 RSA2 验签）。"""
+async def alipay_notify(request: Request, db: Session = Depends(get_db)):
+    """支付宝异步通知。
+
+    支付宝真实回调为 form-urlencoded，需返回纯文本 success 才停止重试；
+    本机联调/测试用 JSON，保持原有 JSON 响应便于断言。
+    """
+    content_type = request.headers.get("content-type", "")
+    is_form = content_type.startswith("application/x-www-form-urlencoded")
+    if is_form:
+        payload = dict(await request.form())
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
     ok, msg = payment.handle_alipay_notify(db, payload)
     if ok:
         db.commit()
     else:
         db.rollback()
         logger.warning("[payment] 通知处理失败：%s", msg)
+
+    if is_form:
+        return PlainTextResponse("success" if ok else "fail")
     return {"code": "10000" if ok else "40004", "msg": msg}

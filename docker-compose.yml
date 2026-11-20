@@ -13,11 +13,24 @@
 #   HHLG_MQTT_PORT=1884  MQTT（设备接入）
 #   HHLG_EMQX_DASH_PORT=18084  EMQX 控制台
 
+# 统一日志轮转，避免长跑后 json-file 撑满磁盘
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   mysql:
     image: mysql:8.0
     container_name: hhlg-mysql
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
       MYSQL_DATABASE: huaihua_logistics
@@ -42,6 +55,12 @@ services:
     image: redis:7-alpine
     container_name: hhlg-redis
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
     volumes:
       - redis_data:/data
@@ -55,6 +74,12 @@ services:
     image: emqx/emqx:5.7
     container_name: hhlg-emqx
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     environment:
       EMQX_NODE__NAME: emqx@127.0.0.1
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASH_PASSWORD:-public123}
@@ -74,9 +99,16 @@ services:
   backend:
     build:
       context: ./backend
-    image: hhlg-backend:latest
+    # CI/CD 时注入 GHCR 镜像名，本地留空即使用本地构建
+    image: ${HHLG_BACKEND_IMAGE:-hhlg-backend:latest}
     container_name: hhlg-backend
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
     depends_on:
       mysql:
         condition: service_healthy
@@ -100,6 +132,9 @@ services:
       DEVICE_OFFLINE_SECONDS: ${DEVICE_OFFLINE_SECONDS:-90}
       # 文件级 OTA：固件发布包只读挂载到容器内，设备按 manifest 拉取
       FW_REPO_DIR: /app/fw/releases
+      # 固件清单 Ed25519 验签：只放公钥；生产建议 OTA_REQUIRE_SIGNATURE=true
+      OTA_PUBLIC_KEY: ${OTA_PUBLIC_KEY:-}
+      OTA_REQUIRE_SIGNATURE: ${OTA_REQUIRE_SIGNATURE:-false}
       ALERT_TEMP_MIN: ${ALERT_TEMP_MIN:--30}
       ALERT_TEMP_MAX: ${ALERT_TEMP_MAX:--5}
       ALERT_HUMIDITY_MAX: ${ALERT_HUMIDITY_MAX:-90}
@@ -108,6 +143,11 @@ services:
       PAYMENT_MODE: ${PAYMENT_MODE:-sandbox}
       ALIPAY_APP_ID: ${ALIPAY_APP_ID:-}
       ALIPAY_GATEWAY: ${ALIPAY_GATEWAY:-https://openapi-sandbox.dl.alipaydev.com/gateway.do}
+      # 配置后异步通知强制 RSA2 验签（后台拷贝的公钥，裸 base64 或 PEM 均可）
+      ALIPAY_PUBLIC_KEY: ${ALIPAY_PUBLIC_KEY:-}
+      ALIPAY_SELLER_ID: ${ALIPAY_SELLER_ID:-}
+      # /metrics 抓取令牌，留空不鉴权
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       TZ: Asia/Shanghai
     volumes:
       - ./iot/firmware:/app/fw:ro
@@ -119,9 +159,15 @@ services:
       context: ./frontend-vue
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
-    image: hhlg-frontend:latest
+    image: ${HHLG_FRONTEND_IMAGE:-hhlg-frontend:latest}
     container_name: hhlg-frontend
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     depends_on:
       backend:
         condition: service_healthy
@@ -134,9 +180,15 @@ services:
       context: ./demand-app
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
-    image: hhlg-demand:latest
+    image: ${HHLG_DEMAND_IMAGE:-hhlg-demand:latest}
     container_name: hhlg-demand
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
     depends_on:
       backend:
         condition: service_healthy
@@ -149,9 +201,15 @@ services:
     build:
       context: .
       dockerfile: iot/Dockerfile
-    image: hhlg-simulator:latest
+    image: ${HHLG_SIMULATOR_IMAGE:-hhlg-simulator:latest}
     container_name: hhlg-simulator
     restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 128m
     depends_on:
       backend:
         condition: service_healthy

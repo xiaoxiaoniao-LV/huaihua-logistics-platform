@@ -1,5 +1,5 @@
 """物联网相关表：设备、数据、预警、告警阈值规则。"""
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, String, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, String, Text, func
 
 from ..database import Base
 
@@ -33,8 +33,32 @@ class OTATask(Base):
     target_version = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default="pending")  # pending/running/success/failed
     message = Column(String(255))
+    # 所属灰度批次；stage: canary（灰度）/ full（全量）/ rollback（回滚）
+    batch_id = Column(String(32), nullable=True, index=True)
+    stage = Column(String(10), nullable=False, default="full")
     created_at = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime)
+
+
+class OTABatch(Base):
+    """一次固件发布批次：记录灰度范围与阶段，支持续发与整批回滚。"""
+
+    __tablename__ = "ota_batches"
+
+    id = Column(String(32), primary_key=True)
+    target_version = Column(String(20), nullable=False)
+    # 灰度范围：space_id 或 device_ids（JSON 数组）限定；均为空表示全部设备
+    space_id = Column(BigInteger, nullable=True)
+    device_ids = Column(Text, nullable=True)
+    rollout_percent = Column(BigInteger, nullable=False, default=100)
+    # canary / full / rollback
+    stage = Column(String(10), nullable=False, default="full")
+    # running / done / failed / rolled_back
+    status = Column(String(20), nullable=False, default="running")
+    # 回滚批次指向被回滚的原批次
+    rollback_of = Column(String(32), nullable=True)
+    created_by = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class IoTData(Base):

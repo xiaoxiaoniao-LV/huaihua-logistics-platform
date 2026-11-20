@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { cancelOrder, listMyOrders, orderStatusLabels, orderStatusTags, type Order } from '@/api/orders'
+import { createPaymentIntent, mockCheckout } from '@/api/payments'
 import { getResource } from '@/api/resources'
 import { isLoggedIn } from '@/api/http'
 
@@ -11,6 +12,7 @@ const loading = ref(false)
 const loaded = ref(false)
 const activeFilter = ref('all')
 const loggedIn = ref(isLoggedIn())
+const payingId = ref<number | null>(null)
 
 const filters = [
   { value: 'all', label: '全部' },
@@ -95,6 +97,37 @@ function askCancel(order: Order) {
   })
 }
 
+function canPay(o: Order) {
+  return o.payment_status !== 'paid' && !['cancelled', 'rejected', 'expired'].includes(o.status)
+}
+
+function askPay(order: Order) {
+  uni.showModal({
+    title: '模拟支付',
+    content: `演示环境：确认后通过 sandbox 收银台直接标记支付成功，金额 ¥${order.total_price}。`,
+    confirmText: '确认支付',
+    success: async (res) => {
+      if (!res.confirm) return
+      payingId.value = order.id
+      try {
+        const intent = await createPaymentIntent(order.id)
+        if (intent.already_paid || !intent.pay_url) {
+          uni.showToast({ title: '该订单已支付', icon: 'none' })
+        } else {
+          // 小程序内无法新开网页，统一用请求触发模拟收银台
+          await mockCheckout(intent.pay_url)
+          uni.showToast({ title: '支付成功', icon: 'success' })
+        }
+        await load()
+      } catch (e) {
+        // request 已提示
+      } finally {
+        payingId.value = null
+      }
+    },
+  })
+}
+
 onShow(() => load())
 
 onPullDownRefresh(async () => {
@@ -141,7 +174,12 @@ onPullDownRefresh(async () => {
             <text class="price">¥{{ o.total_price }}</text>
             <text class="small muted"> · {{ o.payment_status === 'paid' ? '已支付' : '未支付' }}</text>
           </view>
-          <view v-if="o.status === 'pending'" class="cancel" @tap="askCancel(o)">取消预约</view>
+          <view class="foot-actions">
+            <view v-if="canPay(o)" class="pay" @tap="askPay(o)">
+              {{ payingId === o.id ? '支付中…' : '去支付' }}
+            </view>
+            <view v-if="o.status === 'pending'" class="cancel" @tap="askCancel(o)">取消预约</view>
+          </view>
         </view>
       </view>
 
@@ -173,6 +211,15 @@ onPullDownRefresh(async () => {
 .res-name { font-size: 30rpx; font-weight: 600; margin: 16rpx 0 10rpx; }
 .line { margin-top: 6rpx; }
 .foot { margin-top: 18rpx; padding-top: 18rpx; border-top: 1rpx solid #eef2f7; }
+.foot-actions { display: flex; flex-direction: row; align-items: center; gap: 16rpx; }
+.pay {
+  font-size: 26rpx;
+  color: #fff;
+  background: #0a8f96;
+  border-radius: 999rpx;
+  padding: 10rpx 30rpx;
+  font-weight: 600;
+}
 .cancel {
   font-size: 26rpx;
   color: #bf2c2c;

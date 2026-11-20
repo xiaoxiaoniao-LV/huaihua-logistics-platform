@@ -101,6 +101,8 @@ DHT22 + 门磁，另外 I2C 挂两颗传感器（同一组总线可并联）：
 | `SEND_MODE` | `"wifi"`（默认，直连上行）或 `"espnow"`（汇聚到网关） |
 | `GW_MAC` | `SEND_MODE="espnow"` 时必填，网关 STA MAC，如 `24:0A:C4:xx:xx:xx` |
 | `OTA_VERSION_FILE` | 记录 OTA 后版本，默认 `version.txt` |
+| `OTA_PUBLIC_KEY` | 清单验签公钥（Ed25519，裸 base64 或 PEM）；与 `.env` 的 `OTA_PUBLIC_KEY` 一致 |
+| `OTA_ALLOW_UNSIGNED` | 仅调试用。生产置 `False`，拒绝未签名的清单 |
 
 轮换角色时只替换 `config.py`（或改两行）再软重启，无需重新烧录固件。
 
@@ -215,20 +217,31 @@ curl "http://127.0.0.1:8002/api/v1/iot/devices/CW-01/series?point_key=temp_in&li
 ### 1. 打发布包（在仓库根目录）
 
 ```powershell
+# 正式发布：私钥只放发布机/CI，公钥写入 .env 与设备 config.py
+python iot/tools/make_release.py 3.1.0 --sign-key <32字节私钥hex>
+# 仅内网调试可省略签名
 python iot/tools/make_release.py 3.1.0
 ```
 
 产物：`iot/firmware/releases/3.1.0/{manifest.json, main.py, ota.py}`。脚本自动收集 `iot/firmware/*.py`，
-**强制排除 `config.py` / `boot.py` / `make_release.py`**，manifest 记录每个文件的 `size` 与 `sha256`。
+**强制排除 `config.py` / `boot.py` / `make_release.py`**，manifest 记录每个文件的 `size` 与 `sha256`；
+带 `--sign-key` 时会写入 `signature` / `signature_alg=ed25519` / `public_key`，并打印公钥。
 改了 `main.py` 或 `ota.py` 后必须重跑一次，否则发布包与源码不一致（设备会校验 sha256 并失败）。
 
 ### 2. 触发升级（管理员）
 
 ```bash
-# 登录后拿 JWT，再建 OTA 任务；device_codes 可批量
+# 登录后拿 JWT，再建 OTA 任务；device_ids 省略表示全部设备
+# rollout_percent < 100 时按 batch_id + 设备编码哈希确定抽样（灰度），至少 1 台
 curl -X POST http://127.0.0.1:8002/api/v1/devices/ota \
   -H "Authorization: Bearer <JWT>" -H "Content-Type: application/json" \
-  -d '{"target_version":"3.1.0","device_codes":["CW-01","TR-01","GW-01"]}'
+  -d '{"target_version":"3.1.0","device_ids":[1,2,3],"rollout_percent":10}'
+
+# 观察批次无失败后续发全量；异常时整批回滚
+curl -X POST http://127.0.0.1:8002/api/v1/devices/ota/batch/<batch_id>/promote \
+  -H "Authorization: Bearer <JWT>"
+curl -X POST http://127.0.0.1:8002/api/v1/devices/ota/batch/<batch_id>/rollback \
+  -H "Authorization: Bearer <JWT>" -H "Content-Type: application/json" -d '{}'
 ```
 
 设备需满足：`ENABLE_MQTT=True`、`MQTT_HOST/PORT` 已配、已上传 `umqtt/simple.py`、且固件已在运行（订阅 `iot/<code>/cmd`）。
@@ -257,6 +270,8 @@ curl http://127.0.0.1:8002/api/v1/iot/devices/CW-01/state
 ### 5. 安全边界
 
 - 版本号白名单 `^[0-9A-Za-z][0-9A-Za-z._-]{0,19}$`，文件名白名单 `^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\.py$`；
+- **清单 Ed25519 验签**：设备下载前用 `config.py` 的 `OTA_PUBLIC_KEY` 校验签名，签名不匹配直接中止；
+  `OTA_ALLOW_UNSIGNED=False` 时未签名清单一律拒绝（服务端同样校验，防止中间人篡改版本/哈希）；
 - 服务端与设备端**双重剔除** `config.py` / `boot.py`，防止把网关配置推到子节点；
 - 解析后的父目录必须等于版本目录，阻止路径穿越；
 - 设备先写 `name.new` 再改名，单个文件下载/校验失败即中止并上报 `failed`，保留旧固件可继续运行；

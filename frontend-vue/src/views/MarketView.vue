@@ -133,7 +133,7 @@ onMounted(load)
 
 <template>
   <div class="page-scroll">
-    <div class="toolbar">
+    <div class="toolbar" data-guide="market-toolbar">
       <select v-model="typeFilter" class="select" style="width: 160px" @change="applyFilters">
         <option value="">全部类型</option>
         <option v-for="(label, key) in typeLabels" :key="key" :value="key">{{ label }}</option>

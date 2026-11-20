@@ -1,0 +1,22 @@
+# HTTPS 可选部署（overlay，不修改基础栈）
+#
+# 启用：
+#   1. 准备证书：deploy/https/certs/server.crt、server.key
+#   2. docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+#
+# 端口：HHLG_HTTPS_PORT（默认 443）。80 仍保留，用于 HTTP → HTTPS 跳转与健康检查。
+# 需求端（demand-app）如需 HTTPS，可按同样方式挂载证书与配置。
+
+services:
+  frontend:
+    ports:
+      - "${HHLG_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/https/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/https/certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5

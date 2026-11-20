@@ -1,9 +1,9 @@
 ﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
-  autoBindDevices, createDevice, createOtaJob, deleteDevice, importDevices, listDevices,
-  listOtaTasks, updateDevice,
-  type Device, type ImportResult, type OtaTask,
+  autoBindDevices, createDevice, createOtaJob, deleteDevice, getOtaBatch, importDevices,
+  listDevices, listOtaTasks, promoteOtaBatch, rollbackOtaBatch, updateDevice,
+  type Device, type ImportResult, type OtaBatch, type OtaTask,
 } from '@/api/devices'
 import { listResources, type Resource } from '@/api/resources'
 import { useAuthStore } from '@/stores/auth'
@@ -213,18 +213,38 @@ const otaTasks = ref<OtaTask[]>([])
 const showOta = ref(false)
 const otaVersion = ref('1.1.0')
 const otaSelected = ref<number[]>([])
+const otaPercent = ref(100)
 const otaSubmitting = ref(false)
 const otaError = ref('')
 const otaResult = ref('')
+const otaBatch = ref<OtaBatch | null>(null)
+const otaBatchBusy = ref(false)
 
 const otaStatusLabels: Record<string, string> = {
   pending: '待下发', running: '下发中', success: '成功', failed: '失败',
+}
+const otaStageLabels: Record<string, string> = {
+  canary: '灰度', full: '全量', rollback: '回滚',
+}
+const otaBatchStatusLabels: Record<string, string> = {
+  running: '进行中', done: '已完成', failed: '有失败', rolled_back: '已回滚',
+}
+
+async function loadOtaBatch(batchId: string) {
+  try {
+    const { data } = await getOtaBatch(batchId)
+    otaBatch.value = data
+  } catch {
+    // 批次信息属于辅助信息，失败不阻断主流程
+  }
 }
 
 async function loadOtaTasks() {
   try {
     const { data } = await listOtaTasks(20)
     otaTasks.value = data
+    const latest = data.find((t) => t.batch_id)
+    if (latest?.batch_id) await loadOtaBatch(latest.batch_id)
   } catch {
     // 升级任务列表属于辅助信息，失败不阻断设备列表
   }
@@ -233,6 +253,7 @@ async function loadOtaTasks() {
 function openOta() {
   otaVersion.value = '1.1.0'
   otaSelected.value = devices.value.filter((d) => d.status === 'online').map((d) => d.id)
+  otaPercent.value = 100
   otaError.value = ''
   otaResult.value = ''
   showOta.value = true
@@ -257,15 +278,55 @@ async function submitOta() {
   }
   otaSubmitting.value = true
   try {
-    const { data } = await createOtaJob({ target_version: target, device_ids: otaSelected.value })
+    const percent = Math.min(100, Math.max(1, Number(otaPercent.value) || 100))
+    const { data } = await createOtaJob({
+      target_version: target,
+      device_ids: otaSelected.value,
+      rollout_percent: percent,
+    })
     otaResult.value = data.length
-      ? `已创建 ${data.length} 个升级任务，等待设备回执`
+      ? `已创建 ${data.length} 个升级任务（${percent < 100 ? `灰度 ${percent}%` : '全量'}），等待设备回执`
       : '所选设备已是目标版本，无需升级'
+    const batchId = data.find((t) => t.batch_id)?.batch_id
+    if (batchId) await loadOtaBatch(batchId)
     await Promise.all([load(), loadOtaTasks()])
   } catch (e) {
     otaError.value = apiError(e, '下发失败')
   } finally {
     otaSubmitting.value = false
+  }
+}
+
+async function promoteOta() {
+  if (!otaBatch.value) return
+  otaBatchBusy.value = true
+  otaError.value = ''
+  try {
+    const { data } = await promoteOtaBatch(otaBatch.value.batch_id)
+    otaBatch.value = data
+    otaResult.value = '已续发为全量，剩余设备将陆续收到升级指令'
+    await Promise.all([load(), loadOtaTasks()])
+  } catch (e) {
+    otaError.value = apiError(e, '续发失败')
+  } finally {
+    otaBatchBusy.value = false
+  }
+}
+
+async function rollbackOta() {
+  if (!otaBatch.value) return
+  if (!window.confirm(`确认回滚批次 ${otaBatch.value.batch_id} 到升级前版本？`)) return
+  otaBatchBusy.value = true
+  otaError.value = ''
+  try {
+    const { data } = await rollbackOtaBatch(otaBatch.value.batch_id)
+    otaBatch.value = data
+    otaResult.value = '已创建回滚批次，等待设备回执'
+    await Promise.all([load(), loadOtaTasks()])
+  } catch (e) {
+    otaError.value = apiError(e, '回滚失败')
+  } finally {
+    otaBatchBusy.value = false
   }
 }
 </script>
@@ -367,6 +428,47 @@ async function submitOta() {
     <div v-if="otaTasks.length" class="panel" style="margin-top: 12px">
       <div class="panel-title">最近升级任务</div>
       <div class="panel-body">
+        <div v-if="otaBatch" class="ota-batch">
+          <div class="ota-batch-head">
+            <span class="mono">
+              {{ otaStageLabels[otaBatch.stage] || otaBatch.stage }} · v{{ otaBatch.target_version }}
+              <span v-if="otaBatch.stage === 'canary'" class="muted">（{{ otaBatch.rollout_percent }}%）</span>
+            </span>
+            <span
+              class="tag"
+              :class="{
+                'tag-green': otaBatch.status === 'done',
+                'tag-red': otaBatch.status === 'failed' || otaBatch.status === 'rolled_back',
+                'tag-blue': otaBatch.status === 'running',
+              }"
+            >
+              {{ otaBatchStatusLabels[otaBatch.status] || otaBatch.status }}
+            </span>
+          </div>
+          <div class="muted" style="font-size: 12px">
+            共 {{ otaBatch.total }} 台：成功 {{ otaBatch.success }} · 失败 {{ otaBatch.failed }} ·
+            下发中 {{ otaBatch.running }} · 待下发 {{ otaBatch.pending }}
+            <span class="mono" style="font-size: 11px; margin-left: 6px">{{ otaBatch.batch_id.slice(0, 8) }}</span>
+          </div>
+          <div class="ota-batch-actions">
+            <button
+              v-if="otaBatch.stage === 'canary' && otaBatch.status === 'running'"
+              class="btn btn-sm"
+              :disabled="otaBatchBusy"
+              @click="promoteOta"
+            >
+              续发全量
+            </button>
+            <button
+              v-if="otaBatch.status !== 'rolled_back' && otaBatch.stage !== 'rollback'"
+              class="btn btn-ghost btn-sm"
+              :disabled="otaBatchBusy"
+              @click="rollbackOta"
+            >
+              回滚批次
+            </button>
+          </div>
+        </div>
         <table class="table">
           <thead>
             <tr>
@@ -476,9 +578,21 @@ async function submitOta() {
         <label class="field-label">目标版本</label>
         <input v-model="otaVersion" class="input" placeholder="如：1.1.0" />
       </div>
+      <div class="field">
+        <label class="field-label">灰度比例（%）</label>
+        <input
+          v-model.number="otaPercent"
+          class="input"
+          type="number"
+          min="1"
+          max="100"
+          step="1"
+        />
+      </div>
       <div class="field-hint">
         平台通过 MQTT 向 iot/{device_code}/cmd 下发 OTA 指令，设备回执成功后固件版本自动更新。
-        已是目标版本的设备会被跳过。
+        已是目标版本的设备会被跳过。灰度比例小于 100 时按批次号稳定抽样，先升级一部分设备，
+        确认无异常后可在批次面板一键续发全量；出问题可整批回滚。
       </div>
       <div class="ota-pick">
         <div class="ota-pick-head">
@@ -538,4 +652,14 @@ async function submitOta() {
 .ota-item:last-child { border-bottom: none; }
 .ota-item:hover { background: rgba(0, 229, 255, 0.06); }
 .ota-item span:nth-of-type(1) { flex: 1; }
+.ota-batch {
+  margin-bottom: 10px; padding: 8px 10px;
+  border: 1px solid var(--border-glow); border-radius: 4px;
+  background: rgba(0, 229, 255, 0.03);
+}
+.ota-batch-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; margin-bottom: 4px;
+}
+.ota-batch-actions { display: flex; gap: 6px; margin-top: 8px; }
 </style>

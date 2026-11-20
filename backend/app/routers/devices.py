@@ -4,26 +4,32 @@
 设备表通过 resource_id 关联；resource_id=0 表示尚未绑定。
 """
 import csv
+import hashlib
 import io
 import json
 import logging
 import re
+import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import mqtt_client
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user, require_admin
-from ..models import IoTData, IoTDevice, OTATask, Resource, User
+from ..models import IoTData, IoTDevice, OTABatch, OTATask, Resource, User
 from ..schemas.device import (
     DeviceCreate, DeviceOut, DeviceUpdate,
-    ImportErrorItem, ImportResult, OTAReport, OTARequest, OTATaskOut,
+    ImportErrorItem, ImportResult, OTABatchOut, OTAReport, OTARequest,
+    OTARollbackRequest, OTATaskOut,
 )
+from ..services.ota_signing import verify_manifest
 from .iot import _verify_device_token
 
 logger = logging.getLogger(__name__)
@@ -334,24 +340,43 @@ async def import_devices(
 
 # ---------------- 固件 OTA ----------------
 
-@router.post("/ota", response_model=list[OTATaskOut])
-def create_ota_job(
-    data: OTARequest,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    """为目标版本低于 target_version 的设备批量创建升级任务，并通过 MQTT 下发指令。"""
-    target = data.target_version.strip()
-    if not target:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标版本不能为空")
+def _task_out(task: OTATask, device_code: str | None = None) -> OTATaskOut:
+    return OTATaskOut(
+        id=task.id, device_id=task.device_id, device_code=device_code,
+        from_version=task.from_version, target_version=task.target_version,
+        status=task.status, message=task.message,
+        batch_id=task.batch_id, stage=task.stage,
+        created_at=task.created_at, finished_at=task.finished_at,
+    )
 
+
+def _scope_devices(
+    db: Session, space_id: int | None, device_ids: list[int] | None
+) -> list[IoTDevice]:
     q = db.query(IoTDevice)
-    if data.device_ids:
-        q = q.filter(IoTDevice.id.in_(data.device_ids))
-    devices = q.order_by(IoTDevice.id).all()
-    if not devices:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有符合条件的设备")
+    if device_ids:
+        q = q.filter(IoTDevice.id.in_(device_ids))
+    if space_id:
+        q = q.filter(IoTDevice.space_id == space_id)
+    return q.order_by(IoTDevice.id).all()
 
+
+def _sample_devices(batch_id: str, devices: list[IoTDevice], percent: int) -> list[IoTDevice]:
+    """按批次+设备号确定性抽样，保证同一批次反复续发时命中集合稳定。"""
+    if percent >= 100:
+        return list(devices)
+    picked = [
+        dev for dev in devices
+        if int(hashlib.sha256(f"{batch_id}:{dev.id}".encode()).hexdigest()[:8], 16) % 100 < percent
+    ]
+    # 比例过小时至少下发一台，否则灰度完全不可观测
+    return picked or devices[:1]
+
+
+def _dispatch_ota(
+    db: Session, devices: list[IoTDevice], target: str, batch_id: str, stage: str
+) -> list[tuple[OTATask, IoTDevice]]:
+    """创建任务并逐台下发 MQTT 指令；返回 (任务, 设备) 列表。"""
     tasks: list[tuple[OTATask, IoTDevice]] = []
     for dev in devices:
         current = dev.firmware_version or "1.0.0"
@@ -362,6 +387,8 @@ def create_ota_job(
             from_version=current,
             target_version=target,
             status="pending",
+            batch_id=batch_id,
+            stage=stage,
         )
         db.add(task)
         tasks.append((task, dev))
@@ -376,21 +403,113 @@ def create_ota_job(
         ):
             task.status = "running"
     db.commit()
+    return tasks
 
-    codes = {d.id: d.device_code for d in devices}
-    logger.info(
-        "[devices] OTA 下发：目标版本 %s，任务 %d 个（操作人 %s）",
-        target, len(tasks), admin.username,
+
+def _get_batch(db: Session, batch_id: str) -> OTABatch:
+    batch = db.get(OTABatch, batch_id)
+    if batch is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "升级批次不存在")
+    return batch
+
+
+def _refresh_batch_status(db: Session, batch_id: str | None) -> None:
+    """批次内任务全部结束后收敛批次状态。"""
+    if not batch_id:
+        return
+    rows = dict(
+        db.query(OTATask.status, func.count())
+        .filter(OTATask.batch_id == batch_id)
+        .group_by(OTATask.status)
+        .all()
     )
-    return [
-        OTATaskOut(
-            id=t.id, device_id=t.device_id, device_code=codes.get(t.device_id),
-            from_version=t.from_version, target_version=t.target_version,
-            status=t.status, message=t.message,
-            created_at=t.created_at, finished_at=t.finished_at,
-        )
-        for t, _dev in tasks
-    ]
+    if rows.get("pending") or rows.get("running"):
+        return
+    batch = db.get(OTABatch, batch_id)
+    if batch is None or batch.status in ("done", "failed", "rolled_back"):
+        return
+    batch.status = "done" if rows.get("success") else "failed"
+    db.commit()
+
+
+def _batch_out(db: Session, batch: OTABatch) -> OTABatchOut:
+    rows = dict(
+        db.query(OTATask.status, func.count())
+        .filter(OTATask.batch_id == batch.id)
+        .group_by(OTATask.status)
+        .all()
+    )
+    pending = rows.get("pending", 0)
+    running = rows.get("running", 0)
+    success = rows.get("success", 0)
+    failed = rows.get("failed", 0)
+    return OTABatchOut(
+        batch_id=batch.id,
+        target_version=batch.target_version,
+        stage=batch.stage,
+        status=batch.status,
+        rollout_percent=batch.rollout_percent,
+        rollback_of=batch.rollback_of,
+        total=pending + running + success + failed,
+        pending=pending,
+        running=running,
+        success=success,
+        failed=failed,
+    )
+
+
+def _batch_scope_devices(db: Session, batch: OTABatch) -> list[IoTDevice]:
+    device_ids = json.loads(batch.device_ids) if batch.device_ids else None
+    return _scope_devices(db, batch.space_id, device_ids)
+
+
+@router.post("/ota", response_model=list[OTATaskOut])
+def create_ota_job(
+    data: OTARequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """批量创建升级任务并通过 MQTT 下发；rollout_percent<100 时进入灰度批次。"""
+    target = data.target_version.strip()
+    if not target:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "目标版本不能为空")
+
+    devices = _scope_devices(db, data.space_id, data.device_ids)
+    if not devices:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有符合条件的设备")
+
+    candidates = [d for d in devices if (d.firmware_version or "1.0.0") != target]
+    if not candidates:
+        return []
+
+    batch_id = uuid.uuid4().hex
+    stage = "canary" if data.rollout_percent < 100 else "full"
+    picked = _sample_devices(batch_id, candidates, data.rollout_percent)
+
+    batch = OTABatch(
+        id=batch_id,
+        target_version=target,
+        space_id=data.space_id,
+        device_ids=json.dumps(data.device_ids) if data.device_ids else None,
+        rollout_percent=data.rollout_percent,
+        stage=stage,
+        status="running",
+        created_by=admin.id,
+    )
+    db.add(batch)
+    db.commit()
+
+    tasks = _dispatch_ota(db, picked, target, batch_id, stage)
+    if not tasks:
+        batch.status = "done"
+        db.commit()
+        return []
+
+    logger.info(
+        "[devices] OTA 下发：目标版本 %s，批次 %s（%s %d%%），任务 %d 个（操作人 %s）",
+        target, batch_id, stage, data.rollout_percent, len(tasks), admin.username,
+    )
+    return [_task_out(t, dev.device_code) for t, dev in tasks]
 
 
 @router.get("/ota", response_model=list[OTATaskOut])
@@ -407,15 +526,7 @@ def list_ota_tasks(
             return []
         q = q.filter(IoTDevice.resource_id.in_(owned))
     rows = q.order_by(OTATask.id.desc()).limit(limit).all()
-    return [
-        OTATaskOut(
-            id=t.id, device_id=t.device_id, device_code=dev.device_code,
-            from_version=t.from_version, target_version=t.target_version,
-            status=t.status, message=t.message,
-            created_at=t.created_at, finished_at=t.finished_at,
-        )
-        for t, dev in rows
-    ]
+    return [_task_out(t, dev.device_code) for t, dev in rows]
 
 
 @router.get("/ota/manifest/{version}", dependencies=[Depends(_verify_device_token)])
@@ -439,6 +550,29 @@ def get_ota_manifest(version: str):
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "manifest.json 结构不合法")
 
     manifest["version"] = manifest.get("version") or version
+
+    # 签名校验：配置了公钥就必须通过；未配置公钥时按 ota_require_signature 决定是否放行
+    if settings.ota_public_key:
+        ok, reason = verify_manifest(manifest)
+        if not ok:
+            logger.error("[devices] 固件 %s 清单验签失败：%s", version, reason)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"固件清单验签失败：{reason}")
+    elif settings.ota_require_signature:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "服务端未配置 OTA_PUBLIC_KEY，无法校验固件清单签名",
+        )
+
+    # 签名清单不得夹带节点专属文件，否则验签通过也无法安全下发
+    excluded_in_manifest = [
+        str(item.get("name"))
+        for item in manifest["files"]
+        if isinstance(item, dict) and str(item.get("name", "")) in _FW_EXCLUDED_FILES
+    ]
+    if excluded_in_manifest and manifest.get("signature"):
+        logger.error("[devices] 固件 %s 签名清单包含禁止分发文件：%s", version, excluded_in_manifest)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "签名清单包含禁止分发文件")
+
     manifest["files"] = [
         item
         for item in manifest["files"]
@@ -480,6 +614,7 @@ def report_ota(data: OTAReport, db: Session = Depends(get_db)):
     if data.success:
         dev.firmware_version = data.target_version
     db.commit()
+    _refresh_batch_status(db, task.batch_id)
     logger.info(
         "[devices] OTA 回执：%s %s → %s，结果 %s",
         dev.device_code, task.from_version, task.target_version, task.status,
@@ -489,3 +624,115 @@ def report_ota(data: OTAReport, db: Session = Depends(get_db)):
         "status": task.status,
         "firmware_version": dev.firmware_version,
     }
+
+
+@router.get("/ota/batch/{batch_id}", response_model=OTABatchOut)
+def get_ota_batch(
+    batch_id: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """查看灰度/全量升级批次的任务统计。"""
+    return _batch_out(db, _get_batch(db, batch_id))
+
+
+@router.post("/ota/batch/{batch_id}/promote", response_model=OTABatchOut)
+def promote_ota_batch(
+    batch_id: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """灰度批次续发为全量：向范围内尚未升级的设备补发任务。"""
+    batch = _get_batch(db, batch_id)
+    if batch.stage == "rollback":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "回滚批次不能续发")
+
+    counts = dict(
+        db.query(OTATask.status, func.count())
+        .filter(OTATask.batch_id == batch_id)
+        .group_by(OTATask.status)
+        .all()
+    )
+    if counts.get("failed"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "批次存在失败任务，请先排查或回滚")
+
+    busy = {
+        t.device_id
+        for t in db.query(OTATask)
+        .filter(OTATask.batch_id == batch_id, OTATask.status.in_(("pending", "running")))
+        .all()
+    }
+    devices = [d for d in _batch_scope_devices(db, batch) if d.id not in busy]
+    candidates = [d for d in devices if (d.firmware_version or "1.0.0") != batch.target_version]
+
+    batch.stage = "full"
+    batch.rollout_percent = 100
+    batch.status = "running"
+    db.commit()
+
+    tasks = _dispatch_ota(db, candidates, batch.target_version, batch.id, "full")
+    if not tasks:
+        _refresh_batch_status(db, batch.id)
+    logger.info(
+        "[devices] OTA 批次续发：%s → %s，新增任务 %d 个（操作人 %s）",
+        batch_id, batch.target_version, len(tasks), admin.username,
+    )
+    return _batch_out(db, batch)
+
+
+@router.post("/ota/batch/{batch_id}/rollback", response_model=OTABatchOut)
+def rollback_ota_batch(
+    batch_id: str,
+    data: OTARollbackRequest | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """回滚批次：新建回滚批次，把范围内设备退回到指定/原版本。"""
+    batch = _get_batch(db, batch_id)
+    if batch.status == "rolled_back":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该批次已回滚")
+
+    target = ((data.target_version if data else None) or "").strip() or None
+    if target is None:
+        row = (
+            db.query(OTATask.from_version, func.count())
+            .filter(OTATask.batch_id == batch_id)
+            .group_by(OTATask.from_version)
+            .order_by(func.count().desc())
+            .first()
+        )
+        target = row[0] if row and row[0] else None
+    if not target:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "无法确定回滚目标版本，请显式指定")
+
+    devices = _batch_scope_devices(db, batch)
+    if not devices:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "批次范围内没有设备")
+
+    batch.status = "rolled_back"
+    db.commit()
+
+    rollback_id = uuid.uuid4().hex
+    rollback = OTABatch(
+        id=rollback_id,
+        target_version=target,
+        space_id=batch.space_id,
+        device_ids=batch.device_ids,
+        rollout_percent=100,
+        stage="rollback",
+        status="running",
+        rollback_of=batch.id,
+        created_by=admin.id,
+    )
+    db.add(rollback)
+    db.commit()
+
+    tasks = _dispatch_ota(db, devices, target, rollback_id, "rollback")
+    if not tasks:
+        rollback.status = "done"
+        db.commit()
+    logger.warning(
+        "[devices] OTA 回滚：%s → %s，回滚批次 %s，任务 %d 个（操作人 %s）",
+        batch.target_version, target, rollback_id, len(tasks), admin.username,
+    )
+    return _batch_out(db, rollback)

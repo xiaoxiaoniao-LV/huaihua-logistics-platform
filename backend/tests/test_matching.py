@@ -105,6 +105,57 @@ def test_reasons_and_new_dimensions_present(client, make_user, make_resource):
     assert isinstance(r["reasons"], list)
 
 
+def test_matching_weights_configurable_and_explainable(client, make_user, make_resource):
+    """管理员可调权重；原始分保留，加权分单独输出，默认权重下两者一致。"""
+    admin = make_user(role="admin")
+    sup = make_user(role="supplier")
+    _mk(make_resource, sup, "50.00")
+
+    r = client.get("/api/v1/match/weights", headers=admin["headers"])
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["weights"]) == set(body["defaults"])
+    assert all(v == 1.0 for v in body["weights"].values())
+    assert body["labels"]["price_score"] == "价格友好"
+
+    # 非管理员不可读写权重
+    assert client.get("/api/v1/match/weights", headers=sup["headers"]).status_code == 403
+    assert client.put(
+        "/api/v1/match/weights", headers=sup["headers"],
+        json={"weights": {"price_score": 0}},
+    ).status_code == 403
+
+    # 默认权重下加权分与原始分一致
+    default_rec = client.get("/api/v1/match/recommend").json()["results"][0]
+    assert default_rec["weighted_breakdown"] == default_rec["score_breakdown"]
+
+    r = client.put(
+        "/api/v1/match/weights", headers=admin["headers"],
+        json={"weights": {"price_score": 0, "rating_score": 2}},
+    )
+    assert r.status_code == 200
+    assert r.json()["weights"]["price_score"] == 0.0
+    assert r.json()["weights"]["rating_score"] == 2.0
+    # 未提交的维度保持默认 1.0
+    assert r.json()["weights"]["hotness_score"] == 1.0
+
+    rec = client.get("/api/v1/match/recommend").json()["results"][0]
+    assert rec["score_breakdown"]["price_score"] == 30.0   # 原始分不变
+    assert rec["weighted_breakdown"]["price_score"] == 0.0
+    assert rec["weighted_breakdown"]["rating_score"] == 18.0  # 中性分 9 × 2
+    assert rec["match_score"] < default_rec["match_score"]
+
+    # 越界或未知维度直接拒绝
+    assert client.put(
+        "/api/v1/match/weights", headers=admin["headers"],
+        json={"weights": {"price_score": 9}},
+    ).status_code == 422
+    assert client.put(
+        "/api/v1/match/weights", headers=admin["headers"],
+        json={"weights": {"unknown": 1}},
+    ).status_code == 422
+
+
 def test_logged_in_user_gets_preference_bonus(client, make_user, make_resource):
     """历史下单过冷链箱位的用户，同类资源应获得偏好加分。"""
     demander = make_user(role="demander")

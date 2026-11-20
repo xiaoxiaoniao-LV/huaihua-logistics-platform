@@ -10,8 +10,8 @@ import { apiError } from '@/utils/error'
 import { theme } from '@/config/theme'
 import { ECHARTS_THEME } from '@/config/echartsTheme'
 import {
-  getReconciliation, listSettlements, updateSettlementStatus,
-  type Reconciliation, type Settlement,
+  getInvoicePdf, getReconciliation, getSettlementSplit, listSettlements, updateSettlementStatus,
+  type Reconciliation, type Settlement, type SettlementSplit,
 } from '@/api/settlements'
 
 const auth = useAuthStore()
@@ -115,6 +115,8 @@ const settleStatus = ref('')
 const settleLoading = ref(false)
 const settleError = ref('')
 const settlingId = ref<number | null>(null)
+const invoicingId = ref<number | null>(null)
+const split = ref<SettlementSplit | null>(null)
 
 const settleLabels: Record<string, string> = {
   pending: '待确认', confirmed: '已确认', paid: '已打款', void: '已作废',
@@ -132,12 +134,14 @@ async function loadSettlements() {
   settleLoading.value = true
   settleError.value = ''
   try {
-    const [reconResp, listResp] = await Promise.all([
+    const [reconResp, listResp, splitResp] = await Promise.all([
       getReconciliation(),
       listSettlements({ status: settleStatus.value || undefined, page: 1, page_size: 50 }),
+      getSettlementSplit(),
     ])
     recon.value = reconResp.data
     settlements.value = listResp.data
+    split.value = splitResp.data
   } catch (e) {
     settleError.value = apiError(e, '加载结算数据失败')
   } finally {
@@ -156,6 +160,24 @@ async function moveSettlement(s: Settlement, next: string, confirmText: string) 
     settleError.value = apiError(e, '更新结算状态失败')
   } finally {
     settlingId.value = null
+  }
+}
+
+async function downloadInvoice(s: Settlement) {
+  invoicingId.value = s.id
+  settleError.value = ''
+  try {
+    const resp = await getInvoicePdf(s.id)
+    const url = URL.createObjectURL(new Blob([resp.data], { type: 'application/pdf' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `invoice-${s.id}.pdf`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    settleError.value = apiError(e, '下载发票失败')
+  } finally {
+    invoicingId.value = null
   }
 }
 
@@ -291,7 +313,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="panel" style="margin-top: 16px">
+      <div class="panel" style="margin-top: 16px" data-guide="settlement-panel">
         <div class="panel-title">结算与对账</div>
         <div class="panel-body">
           <div v-if="settleError" class="error-text">{{ settleError }}</div>
@@ -397,6 +419,14 @@ onUnmounted(() => {
                     >
                       作废
                     </button>
+                    <button
+                      v-if="s.status !== 'void'"
+                      class="btn btn-ghost btn-sm"
+                      :disabled="invoicingId === s.id"
+                      @click="downloadInvoice(s)"
+                    >
+                      {{ invoicingId === s.id ? '生成中…' : '凭证' }}
+                    </button>
                     <span v-if="s.status === 'paid'" class="muted" style="font-size: 12px">
                       {{ s.settled_at ? s.settled_at.replace('T', ' ').slice(0, 16) : '已打款' }}
                     </span>
@@ -408,6 +438,44 @@ onUnmounted(() => {
                 <td colspan="8">
                   <div class="empty">{{ settleLoading ? '加载中…' : '暂无结算单（订单完成后自动生成）' }}</div>
                 </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="panel-title" style="margin-top: 16px">租户分账（按供给方）</div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>供给方</th>
+                <th>结算笔数</th>
+                <th>订单金额</th>
+                <th>佣金</th>
+                <th>应付</th>
+                <th>已付</th>
+                <th>待付</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in split?.items || []" :key="r.supplier_id">
+                <td>{{ r.supplier_name }}</td>
+                <td class="mono">{{ r.settlements }}</td>
+                <td class="mono">{{ money(r.amount) }}</td>
+                <td class="mono" style="color: var(--accent-orange)">{{ money(r.commission) }}</td>
+                <td class="mono">{{ money(r.payable) }}</td>
+                <td class="mono" style="color: var(--status-available)">{{ money(r.paid) }}</td>
+                <td class="mono" style="color: var(--status-pending)">{{ money(r.unpaid) }}</td>
+              </tr>
+              <tr v-if="split && split.items.length">
+                <td class="muted">合计</td>
+                <td class="mono">{{ split.total.settlements }}</td>
+                <td class="mono">{{ money(split.total.amount) }}</td>
+                <td class="mono">{{ money(split.total.commission) }}</td>
+                <td class="mono">{{ money(split.total.payable) }}</td>
+                <td class="mono">{{ money(split.total.paid) }}</td>
+                <td class="mono">{{ money(split.total.unpaid) }}</td>
+              </tr>
+              <tr v-if="!split || !split.items.length">
+                <td colspan="7"><div class="empty">暂无分账数据</div></td>
               </tr>
             </tbody>
           </table>

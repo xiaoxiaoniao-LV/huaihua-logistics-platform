@@ -2,6 +2,7 @@
 
 流程：
   1. GET /api/v1/devices/ota/manifest/<version>  拉取清单（name + size + sha256）
+  1.5 用固件内置 Ed25519 公钥校验清单签名（防止中间人替换版本/哈希）
   2. GET /api/v1/devices/ota/file/<version>/<name>  逐文件下载并校验
   3. 覆盖写入 .py 文件（config.py / boot.py 例外，永不被覆盖）
   4. 写 version.txt 标记当前版本，回执 /api/v1/devices/ota/report，重启生效
@@ -11,9 +12,10 @@
 - 下载先写 <name>.new，校验通过后再替换，避免半包变砖；
 - 任一环节失败都上报 failed 并保留旧文件，设备继续按旧版本运行。
 
-依赖：urequests（HTTP）、hashlib（校验，缺失时跳过哈希只比对大小）。
+依赖：urequests（HTTP）、hashlib（校验，缺失时跳过哈希只比对大小）、ed25519（清单验签）。
 """
 
+import binascii
 import gc
 import json
 import os
@@ -22,6 +24,7 @@ import time
 import machine
 
 import config as cfg
+import ed25519
 
 try:
     import urequests
@@ -75,7 +78,37 @@ def _fetch_manifest(version):
     files = data.get("files") if isinstance(data, dict) else None
     if not isinstance(files, list) or not files:
         raise RuntimeError("清单为空")
-    return files
+    return data
+
+
+def _b64(text):
+    return binascii.a2b_base64(text)
+
+
+def _verify_manifest(manifest):
+    """验签失败抛 RuntimeError；未配置公钥时按 OTA_ALLOW_UNSIGNED 决定是否放行。"""
+    signature = manifest.get("signature")
+    if not signature:
+        if cfg.OTA_ALLOW_UNSIGNED:
+            log("警告：清单未签名，已按 OTA_ALLOW_UNSIGNED 放行")
+            return
+        raise RuntimeError("清单缺少签名")
+
+    if not cfg.OTA_PUBLIC_KEY:
+        raise RuntimeError("设备未配置 OTA_PUBLIC_KEY，无法验签")
+    alg = str(manifest.get("signature_alg") or "ed25519").lower()
+    if alg != "ed25519":
+        raise RuntimeError("不支持的签名算法 %s" % alg)
+
+    try:
+        public = _b64(cfg.OTA_PUBLIC_KEY)
+        sig = _b64(signature)
+    except Exception:
+        raise RuntimeError("公钥或签名不是合法 base64")
+
+    if not ed25519.verify(public, sig, ed25519.canonical_payload(manifest)):
+        raise RuntimeError("清单验签失败（可能被篡改）")
+    log("清单验签通过")
 
 
 def _safe_name(name):
@@ -150,10 +183,12 @@ def perform(target_version):
 
     log("开始升级 →", version)
     try:
-        files = _fetch_manifest(version)
+        manifest = _fetch_manifest(version)
+        _verify_manifest(manifest)
     except Exception as e:
-        return _fail(version, "拉取清单失败: %s" % e)
+        return _fail(version, "拉取/校验清单失败: %s" % e)
 
+    files = manifest["files"]
     for item in files:
         name = str(item.get("name", ""))
         if not _safe_name(name):

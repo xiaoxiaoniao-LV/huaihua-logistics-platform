@@ -49,14 +49,19 @@ def create_intent(
 def mock_checkout(
     order_id: int = Query(...),
     trade_no: str = Query(...),
+    current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """sandbox 模拟收银台：打开即视为支付成功。生产环境关闭。"""
+    """sandbox 模拟收银台：打开即视为支付成功。
+
+    仅订单相关方（需求方/供给方/管理员）可触发，防止伪造 trade_no 越权支付他人订单。
+    生产环境关闭（payment_mode != sandbox 时返回 404）。
+    """
     if settings.payment_mode != "sandbox":
         raise HTTPException(404, "模拟收银台未启用")
-    order = db.get(Order, order_id)
-    if order is None:
-        raise HTTPException(404, "订单不存在")
+    order = _load_order(db, order_id, current)
+    if payment._order_id_from_trade_no(trade_no) != order_id:
+        raise HTTPException(400, "交易号与订单不匹配")
     payment.apply_event(
         db,
         order,

@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     # 固件清单签名：私钥不进入运行环境，只由打包工具离线使用；后端只做验签。
     # 公钥格式为裸 base64 的 32 字节 Ed25519 公钥；配置后清单必须带有效签名
     ota_public_key: str = ""
-    # 未配置公钥时是否仍允许下发未签名清单（生产必须为 False）
-    ota_require_signature: bool = False
+    # 未配置公钥时是否仍允许下发未签名清单（生产必须为 True，仅内网调试可显式关闭）
+    ota_require_signature: bool = True
 
     # 结算凭证（发票 PDF）抬头：销售方为平台运营主体，税率用于单据上的税额估算
     invoice_seller_name: str = "怀化国际陆港冷链资源智能撮合平台"

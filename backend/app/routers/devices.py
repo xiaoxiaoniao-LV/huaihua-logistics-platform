@@ -10,7 +10,6 @@ import json
 import logging
 import re
 import uuid
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -30,7 +29,7 @@ from ..schemas.device import (
     OTARollbackRequest, OTATaskOut,
 )
 from ..services.ota_signing import verify_manifest
-from .iot import _verify_device_token
+from .iot import _require_device_token
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +401,11 @@ def _dispatch_ota(
             {"action": "ota", "task_id": task.id, "target_version": target},
         ):
             task.status = "running"
+        else:
+            # 下发失败直接置 failed，避免 pending 卡死导致批次永远 running
+            task.status = "failed"
+            task.message = "MQTT 下发失败"
+            task.finished_at = datetime.now()
     db.commit()
     return tasks
 
@@ -529,7 +533,7 @@ def list_ota_tasks(
     return [_task_out(t, dev.device_code) for t, dev in rows]
 
 
-@router.get("/ota/manifest/{version}", dependencies=[Depends(_verify_device_token)])
+@router.get("/ota/manifest/{version}", dependencies=[Depends(_require_device_token)])
 def get_ota_manifest(version: str):
     """设备拉取升级清单（文件级 OTA 第一步）。
 
@@ -581,7 +585,7 @@ def get_ota_manifest(version: str):
     return manifest
 
 
-@router.get("/ota/file/{version}/{filename}", dependencies=[Depends(_verify_device_token)])
+@router.get("/ota/file/{version}/{filename}", dependencies=[Depends(_require_device_token)])
 def download_ota_file(version: str, filename: str):
     """设备下载单个固件文件（文件级 OTA 第二步），只允许 .py 且不接受 config.py。"""
     folder = _fw_version_dir(version)
@@ -593,7 +597,7 @@ def download_ota_file(version: str, filename: str):
     return FileResponse(path, media_type="text/x-python", filename=filename)
 
 
-@router.post("/ota/report", dependencies=[Depends(_verify_device_token)])
+@router.post("/ota/report", dependencies=[Depends(_require_device_token)])
 def report_ota(data: OTAReport, db: Session = Depends(get_db)):
     """设备上报升级结果：成功后更新设备固件版本。"""
     dev = db.query(IoTDevice).filter(IoTDevice.device_code == data.device_code).first()
@@ -694,14 +698,22 @@ def rollback_ota_batch(
 
     target = ((data.target_version if data else None) or "").strip() or None
     if target is None:
-        row = (
-            db.query(OTATask.from_version, func.count())
-            .filter(OTATask.batch_id == batch_id)
-            .group_by(OTATask.from_version)
-            .order_by(func.count().desc())
-            .first()
+        # 仅当批次内所有任务的 from_version 一致时才自动推定；版本不一致时要求显式指定，
+        # 避免按众数推定把部分设备退回错误基线。
+        rows = (
+            db.query(OTATask.from_version)
+            .filter(OTATask.batch_id == batch_id, OTATask.from_version.isnot(None))
+            .distinct()
+            .all()
         )
-        target = row[0] if row and row[0] else None
+        versions = [row[0] for row in rows if row[0]]
+        if len(versions) == 1:
+            target = versions[0]
+        else:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "批次内设备原版本不一致，请显式指定 target_version",
+            )
     if not target:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "无法确定回滚目标版本，请显式指定")
 

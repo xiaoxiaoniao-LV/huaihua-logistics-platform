@@ -132,9 +132,9 @@ services:
       DEVICE_OFFLINE_SECONDS: ${DEVICE_OFFLINE_SECONDS:-90}
       # 文件级 OTA：固件发布包只读挂载到容器内，设备按 manifest 拉取
       FW_REPO_DIR: /app/fw/releases
-      # 固件清单 Ed25519 验签：只放公钥；生产建议 OTA_REQUIRE_SIGNATURE=true
+      # 固件清单 Ed25519 验签：只放公钥；生产默认 OTA_REQUIRE_SIGNATURE=true
       OTA_PUBLIC_KEY: ${OTA_PUBLIC_KEY:-}
-      OTA_REQUIRE_SIGNATURE: ${OTA_REQUIRE_SIGNATURE:-false}
+      OTA_REQUIRE_SIGNATURE: ${OTA_REQUIRE_SIGNATURE:-true}
       ALERT_TEMP_MIN: ${ALERT_TEMP_MIN:--30}
       ALERT_TEMP_MAX: ${ALERT_TEMP_MAX:--5}
       ALERT_HUMIDITY_MAX: ${ALERT_HUMIDITY_MAX:-90}

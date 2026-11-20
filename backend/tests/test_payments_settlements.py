@@ -36,12 +36,38 @@ def test_payment_intent_and_mock_checkout(client, make_user, make_resource):
     assert data["trade_no"].startswith("SBX")
 
     r = client.get("/api/v1/payments/mock-checkout",
-                   params={"order_id": order["id"], "trade_no": data["trade_no"]})
+                   params={"order_id": order["id"], "trade_no": data["trade_no"]},
+                   headers=dem["headers"])
     assert r.status_code == 200
     assert r.json()["payment_status"] == "paid"
 
     detail = client.get(f"/api/v1/orders?mine=demander", headers=dem["headers"]).json()
     assert detail[0]["payment_status"] == "paid"
+
+
+def test_mock_checkout_rejects_unauthorized(client, make_user, make_resource):
+    """无 token 或非订单相关方不能触发模拟支付，防止越权把他人订单置为已付。"""
+    sup, dem, res, order = _make_order(client, make_user, make_resource, price=100)
+
+    intent = client.post(f"/api/v1/payments/{order['id']}/intent", headers=dem["headers"]).json()
+
+    # 无鉴权 → 401
+    r = client.get("/api/v1/payments/mock-checkout",
+                   params={"order_id": order["id"], "trade_no": intent["trade_no"]})
+    assert r.status_code == 401
+
+    # 无关第三方（另一个 demander）→ 403
+    other = make_user()
+    r = client.get("/api/v1/payments/mock-checkout",
+                   params={"order_id": order["id"], "trade_no": intent["trade_no"]},
+                   headers=other["headers"])
+    assert r.status_code == 403
+
+    # 交易号与订单不匹配 → 400
+    r = client.get("/api/v1/payments/mock-checkout",
+                   params={"order_id": order["id"], "trade_no": f"SBX{order['id'] + 1}-123"},
+                   headers=dem["headers"])
+    assert r.status_code == 400
 
 
 def test_alipay_notify_is_idempotent(client, make_user, make_resource):

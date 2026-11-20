@@ -143,6 +143,17 @@ def _verify_device_token(x_device_token: str | None = Header(None, alias="X-Devi
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "设备令牌无效")
 
 
+def _require_device_token(x_device_token: str | None = Header(None, alias="X-Device-Token")):
+    """OTA 等敏感设备接口鉴权：必须配置并校验令牌，不允许空令牌放行。"""
+    expected = settings.device_ingest_token
+    if not expected:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "服务端未配置 DEVICE_INGEST_TOKEN，无法鉴权设备"
+        )
+    if x_device_token != expected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "设备令牌无效")
+
+
 @router.post("/data", status_code=status.HTTP_201_CREATED, dependencies=[Depends(_verify_device_token)])
 def report_data(payload: IoTDataReport, db: Session = Depends(get_db)):
     dev = _ensure_device(db, payload.device_code, payload.firmware_version)

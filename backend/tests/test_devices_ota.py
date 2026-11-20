@@ -3,12 +3,20 @@ import base64
 import hashlib
 import json
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from app import mqtt_client
 from app.services.ota_signing import load_private_key, public_key_b64, sign_manifest
 
 DEVICE_TOKEN = {"X-Device-Token": "test-device-token"}
+
+
+@pytest.fixture(autouse=True)
+def _mock_mqtt_publish(monkeypatch):
+    """测试环境不连接真实 MQTT broker，模拟下发成功。"""
+    monkeypatch.setattr(mqtt_client, "publish", lambda topic, payload: True)
 
 
 def _csv(text: str) -> dict:
@@ -149,6 +157,8 @@ def test_ota_manifest_and_file_download(client, tmp_path, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "fw_repo_dir", str(tmp_path))
+    # 生产默认要求签名，这里显式关闭验签以测试未签名清单的基本下载链路
+    monkeypatch.setattr(settings, "ota_require_signature", False)
     main_py, _ = _seed_release(tmp_path)
 
     r = client.get("/api/v1/devices/ota/manifest/9.9.9", headers=DEVICE_TOKEN)
@@ -375,4 +385,19 @@ def test_ota_batch_rollback(client, make_user):
         f"/api/v1/devices/ota/batch/{batch_id}/rollback", headers=admin["headers"]
     )
     assert again.status_code == 400
+
+
+def test_ota_publish_failure_marks_failed(client, make_user, monkeypatch):
+    """MQTT 下发失败时任务应直接置 failed，避免 pending 卡死导致批次永远 running。"""
+    admin = make_user(role="admin")
+    device = _make_device(client, admin, "OTA-FAIL")
+    monkeypatch.setattr(mqtt_client, "publish", lambda topic, payload: False)
+
+    r = client.post("/api/v1/devices/ota", headers=admin["headers"], json={
+        "target_version": "1.1.0", "device_ids": [device["id"]],
+    })
+    assert r.status_code == 200, r.text
+    task = r.json()[0]
+    assert task["status"] == "failed"
+    assert task["message"] == "MQTT 下发失败"
 

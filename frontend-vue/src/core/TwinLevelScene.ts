@@ -1088,9 +1088,16 @@ export class TwinLevelScene {
           0.14 + Math.abs(Math.sin(t * 1.6)) * 0.16
       }
 
-      // 合批状态环共用一个材质，告警时整体脉动
-      if (this.slotRingMat) {
-        this.slotRingMat.opacity = this.slotAlarm ? 0.45 + Math.abs(Math.sin(t * 2.4)) * 0.4 : 0.45
+      // 告警货位环单独脉动（合批环共用材质，不能整体改 opacity）
+      if (this.slotRings && this.slotAlarm) {
+        const c = new THREE.Color()
+        const pulse = 0.5 + Math.abs(Math.sin(t * 2.4)) * 0.5
+        this.visuals.forEach((v) => {
+          if (v.ringIndex === null || v.node.status !== 'alarm') return
+          c.setHex(TWIN_STATUS_COLOR.alarm).multiplyScalar(pulse)
+          this.slotRings!.setColorAt(v.ringIndex, c)
+        })
+        if (this.slotRings.instanceColor) this.slotRings.instanceColor.needsUpdate = true
       }
       this.updateLod(now)
       this.updateLabelVisibility(now)

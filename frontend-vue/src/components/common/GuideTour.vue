@@ -86,7 +86,8 @@ function waitForTarget(selector: string, timeout = 1600): Promise<void> {
   return new Promise((resolve) => {
     const start = Date.now()
     const tick = () => {
-      if (locate(selector) || Date.now() - start > timeout) return resolve()
+      // 引导已关闭时立即停止轮询，避免残留空转
+      if (!active.value || locate(selector) || Date.now() - start > timeout) return resolve()
       window.setTimeout(tick, 80)
     }
     tick()
@@ -126,7 +127,7 @@ async function go(i: number) {
   index.value = i
   const s = steps.value[i]
   if (route.path !== s.route) {
-    await router.push(s.route)
+    await router.push(s.route).catch(() => {})
   }
   await nextTick()
   await waitForTarget(s.target)

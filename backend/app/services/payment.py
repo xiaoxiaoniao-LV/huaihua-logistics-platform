@@ -142,8 +142,9 @@ def verify_alipay_sign(payload: dict) -> tuple[bool, str]:
         )
     except InvalidSignature:
         return False, "签名校验失败"
-    except Exception as exc:  # 公钥格式错误、base64 非法等
-        return False, f"验签异常：{exc}"
+    except Exception:  # 公钥格式错误、base64 非法等，详情仅记日志不返回给调用方
+        logger.warning("[payment] 支付宝验签异常", exc_info=True)
+        return False, "验签异常"
     return True, "ok"
 
 

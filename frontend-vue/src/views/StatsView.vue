@@ -173,7 +173,8 @@ async function downloadInvoice(s: Settlement) {
     a.href = url
     a.download = `invoice-${s.id}.pdf`
     a.click()
-    URL.revokeObjectURL(url)
+    // 延迟释放，避免 Firefox 下同步 revoke 取消下载
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
   } catch (e) {
     settleError.value = apiError(e, '下载发票失败')
   } finally {

@@ -353,8 +353,12 @@ def _scope_devices(
     db: Session, space_id: int | None, device_ids: list[int] | None
 ) -> list[IoTDevice]:
     q = db.query(IoTDevice)
-    if device_ids:
-        q = q.filter(IoTDevice.id.in_(device_ids))
+    if device_ids is not None:
+        if device_ids:
+            q = q.filter(IoTDevice.id.in_(device_ids))
+        else:
+            # 空数组 = 明确不匹配任何设备，而非误判为全量
+            q = q.filter(IoTDevice.id == -1)
     if space_id:
         q = q.filter(IoTDevice.space_id == space_id)
     return q.order_by(IoTDevice.id).all()
@@ -432,7 +436,12 @@ def _refresh_batch_status(db: Session, batch_id: str | None) -> None:
     batch = db.get(OTABatch, batch_id)
     if batch is None or batch.status in ("done", "failed", "rolled_back"):
         return
-    batch.status = "done" if rows.get("success") else "failed"
+    if rows.get("success"):
+        batch.status = "done"
+    elif rows.get("failed"):
+        batch.status = "failed"
+    else:
+        return  # 无任何任务时保持原状态，避免误判为 failed
     db.commit()
 
 
